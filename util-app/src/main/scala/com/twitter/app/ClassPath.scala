@@ -1,13 +1,14 @@
 package com.twitter.app
 
-import java.net.{URI, URLClassLoader, URISyntaxException}
-import scala.collection.mutable
+import java.io.{File, IOException}
+import java.net.{URI, URISyntaxException, URLClassLoader}
 import java.util.jar.JarFile
-import java.io.{IOException, File}
+
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 /**
- * Inspect and load the classpath. Inspired by 
+ * Inspect and load the classpath. Inspired by
  * Guava's ClassPath utility.
  *
  * @note This is not a generic facility -- it supports
@@ -16,7 +17,7 @@ import scala.collection.JavaConverters._
 private object ClassPath {
 
   private val ignoredPackages = Seq(
-    "apple/", "ch/epfl/", "com/apple/", "com/oracle/", 
+    "apple/", "ch/epfl/", "com/apple/", "com/oracle/",
     "com/sun/", "java/", "javax/", "scala/", "sun/", "sunw/")
 
   // TODO: we can inspect the constant pool for "Premain"
@@ -26,12 +27,12 @@ private object ClassPath {
    * Information about a classpath entry.
    */
   case class Info(path: String, loader: ClassLoader) {
-    val name = (path take (path.length - 6)).replace('/', '.')
-    val packageName = {
-      val i = name.lastIndexOf('.')
-      if (i < 0) "" else name.substring(0, i)
-    }
-    
+    val name =
+      if (path.endsWith(".class"))
+        (path take (path.length - 6)).replace('/', '.')
+      else
+        path.replace('/', '.')
+
     /**
      * Load the classpath described by this entry.
      */
@@ -68,7 +69,7 @@ private object ClassPath {
         }
       case _ =>
     }
-    
+
     ents
   }
 
@@ -102,7 +103,7 @@ private object ClassPath {
     val jarFile = try new JarFile(file) catch {
       case _: IOException => return  // not a Jar file
     }
-    
+
     try {
       for (uri <- jarClasspath(file, jarFile.getManifest))
         browseUri(uri, loader, buf)

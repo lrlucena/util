@@ -153,20 +153,26 @@ sealed abstract class Try[+R] {
   def flatten[T](implicit ev: R <:< Try[T]): Try[T]
 }
 
+object Throw {
+  private val NotApplied: Throw[Nothing] = Throw[Nothing](null)
+  private val AlwaysNotApplied: Any => Throw[Nothing] = scala.Function.const(NotApplied) _
+}
+
 final case class Throw[+R](e: Throwable) extends Try[R] {
   def isThrow = true
   def isReturn = false
   def rescue[R2 >: R](rescueException: PartialFunction[Throwable, Try[R2]]) = {
     try {
-      if (rescueException.isDefinedAt(e)) rescueException(e) else this
+      val result = rescueException.applyOrElse(e, Throw.AlwaysNotApplied)
+      if (result eq Throw.NotApplied) this else result
     } catch {
       case NonFatal(e2) => Throw(e2)
     }
   }
   def apply(): R = throw e
-  def flatMap[R2](f: R => Try[R2]) = Throw[R2](e)
-  def flatten[T](implicit ev: R <:< Try[T]): Try[T] = Throw[T](e)
-  def map[X](f: R => X) = Throw(e)
+  def flatMap[R2](f: R => Try[R2]) = this.asInstanceOf[Throw[R2]]
+  def flatten[T](implicit ev: R <:< Try[T]): Try[T] = this.asInstanceOf[Throw[T]]
+  def map[X](f: R => X) = this.asInstanceOf[Throw[X]]
   def exists(p: R => Boolean) = false
   def filter(p: R => Boolean) = this
   def withFilter(p: R => Boolean) = this

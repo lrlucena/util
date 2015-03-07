@@ -1,8 +1,10 @@
 package com.twitter.util
 
-abstract class Function0[R] extends (() => R)
+import java.util.concurrent.Callable
 
-abstract class ExceptionalFunction0[R] extends Function0[R] {
+abstract class Function0[+R] extends (() => R)
+
+abstract class ExceptionalFunction0[+R] extends Function0[R] {
    /**
     * Implements apply in terms of abstract applyE, to allow Java code to throw checked exceptions.
     */
@@ -30,14 +32,24 @@ abstract class Function[-T1, +R] extends PartialFunction[T1, R] {
 
 object Function {
   /**
-   * Compose a function with a monitor; all invocations of the 
+   * Compose a function with a monitor; all invocations of the
    * returned function are synchronized with the given monitor `m`.
    */
   def synchronizeWith[T, R](m: Object)(f: T => R): T => R =
     t => m.synchronized { f(t) }
+
+  /**
+   * Creates `() => Unit` function from given `Runnable`.
+   */
+  def ofRunnable(r: Runnable): () => Unit = () => r.run()
+
+  /**
+   * Creates `() => A` function from given `Callable`.
+   */
+  def ofCallable[A](c: Callable[A]): () => A = () => c.call()
 }
 
-abstract class ExceptionalFunction[-T1, R] extends Function[T1, R] {
+abstract class ExceptionalFunction[-T1, +R] extends Function[T1, R] {
   /**
    * Implements apply in terms of abstract applyE, to allow Java code to throw checked exceptions.
    */
@@ -46,7 +58,7 @@ abstract class ExceptionalFunction[-T1, R] extends Function[T1, R] {
   def applyE(in: T1): R
 }
 
-abstract class Function2[-T1, -T2, R] extends ((T1, T2) => R)
+abstract class Function2[-T1, -T2, +R] extends ((T1, T2) => R)
 
 abstract class Command[-T1] extends (T1 => Unit) {
   /**

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-sbtver=0.12.4
+sbtver=0.13.7
 sbtjar=sbt-launch.jar
-sbtsha128=701af98879a5c2d89c089d69e96e5d1c3bcfafaa
+sbtsha128=b407b2a76ad72165f806ac7e7ea09132b951ef53
 
 sbtrepo=http://repo.typesafe.com/typesafe/ivy-releases/org.scala-sbt/sbt-launch
 
@@ -30,11 +30,12 @@ java -ea                          \
   -XX:+UseConcMarkSweepGC         \
   -XX:+CMSParallelRemarkEnabled   \
   -XX:+CMSClassUnloadingEnabled   \
+  -XX:ReservedCodeCacheSize=128m  \
   -XX:MaxPermSize=1024m           \
   -XX:SurvivorRatio=128           \
   -XX:MaxTenuringThreshold=0      \
   -Xss8M                          \
   -Xms512M                        \
-  -Xmx1G                          \
+  -Xmx2G                          \
   -server                         \
   -jar $sbtjar "$@"

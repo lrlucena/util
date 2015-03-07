@@ -1,9 +1,10 @@
 package com.twitter.zk
 
+import org.apache.zookeeper.Watcher.Event.{EventType, KeeperState}
+import org.apache.zookeeper.{WatchedEvent, Watcher}
+
 import com.twitter.concurrent.Broker
 import com.twitter.util.{Promise, Return}
-import org.apache.zookeeper.{WatchedEvent, Watcher}
-import org.apache.zookeeper.Watcher.Event.{EventType, KeeperState}
 
 /*
  * WatchedEvent matchers
@@ -50,6 +51,7 @@ object StateEvent {
       case KeeperState.SyncConnected => Connected
       case KeeperState.Disconnected => Disconnected
       case KeeperState.Expired => Expired
+      case KeeperState.NoSyncConnected => throw new IllegalArgumentException("Can't convert deprecated state to StateEvent")
     }
   }
 }

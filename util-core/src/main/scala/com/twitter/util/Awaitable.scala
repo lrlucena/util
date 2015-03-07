@@ -1,6 +1,9 @@
 package com.twitter.util
 
+import com.twitter.concurrent.Scheduler
 import java.util.concurrent.atomic.AtomicBoolean
+import scala.collection.JavaConverters._
+
 
 /**
  * Wait for the result of some action. Awaitable is not used
@@ -25,6 +28,12 @@ trait Awaitable[+T] {
    */
   @throws(classOf[Exception])
   def result(timeout: Duration)(implicit permit: CanAwait): T
+
+  /**
+   * Is this Awaitable ready? In other words: would calling
+   * [[com.twitter.util.Awaitable.ready Awaitable.ready]] block?
+   */
+  def isReady(implicit permit: CanAwait): Boolean
 }
 
 object Awaitable {
@@ -42,15 +51,18 @@ object Awaitable {
  *
  * Returns the result of the action when it has completed.
  *
+ * If you want the results as a [[com.twitter.util.Try]],
+ * use `Await.result(future.liftToTry)`.
+ *
  * @define all
  *
  * Returns after all actions have completed. The timeout given is
- * passed to each awaitable in turn, meaning await time will be
+ * passed to each awaitable in turn, meaning max await time will be
  * awaitables.size * timeout.
  */
 object Await {
   import Awaitable._
-  private object AwaitPermit extends CanAwait
+  private implicit object AwaitPermit extends CanAwait
 
   /** $ready */
   @throws(classOf[TimeoutException])
@@ -58,33 +70,62 @@ object Await {
   def ready[T <: Awaitable[_]](awaitable: T): T =
     ready(awaitable, Duration.Top)
 
-  /** $ready */
+  /**
+   * $ready
+   *
+   * If the `Awaitable` is not ready within `timeout`, a
+   * [[com.twitter.util.TimeoutException]] will be thrown.
+   */
   @throws(classOf[TimeoutException])
   @throws(classOf[InterruptedException])
-  def ready[T <: Awaitable[_]](awaitable: T, timeout: Duration): T =
-    awaitable.ready(timeout)(AwaitPermit)
+  def ready[T <: Awaitable[_]](awaitable: T, timeout: Duration): T = {
+    if (awaitable.isReady) awaitable.ready(timeout)
+    else Scheduler.blocking { awaitable.ready(timeout) }
+  }
 
   /** $result */
   @throws(classOf[Exception])
   def result[T](awaitable: Awaitable[T]): T =
     result(awaitable, Duration.Top)
 
-  /** $result */
+  /**
+   * $result
+   *
+   * If the `Awaitable` is not ready within `timeout`, a
+   * [[com.twitter.util.TimeoutException]] will be thrown.
+   */
   @throws(classOf[Exception])
   def result[T](awaitable: Awaitable[T], timeout: Duration): T =
-    awaitable.result(timeout)(AwaitPermit)
+    if (awaitable.isReady) awaitable.result(timeout)
+    else Scheduler.blocking { awaitable.result(timeout) }
 
   /** $all */
   @throws(classOf[TimeoutException])
   @throws(classOf[InterruptedException])
+  @scala.annotation.varargs
   def all(awaitables: Awaitable[_]*): Unit =
     all(awaitables, Duration.Top)
 
-  /** $all */
+  /**
+   * $all
+   *
+   * If any of the `Awaitable`s are not ready within `timeout`, a
+   * [[com.twitter.util.TimeoutException]] will be thrown.
+   */
   @throws(classOf[TimeoutException])
   @throws(classOf[InterruptedException])
   def all(awaitables: Seq[Awaitable[_]], timeout: Duration): Unit =
-    awaitables foreach { _.ready(timeout)(AwaitPermit) }
+    awaitables foreach { _.ready(timeout) }
+
+  /**
+   * $all
+   *
+   * @see Await.all(Seq, Duration)
+   */
+  @throws(classOf[TimeoutException])
+  @throws(classOf[InterruptedException])
+  def all(awaitables: java.util.Collection[Awaitable[_]], timeout: Duration): Unit =
+    all(awaitables.asScala.toSeq, timeout)
 }
 
 /**
@@ -100,6 +141,8 @@ object Await {
  *   }
  * }
  * }}}
+ *
+ * Note: There is a Java-friendly API for this trait: [[com.twitter.util.AbstractCloseAwaitably]].
  */
 trait CloseAwaitably extends Awaitable[Unit] {
   private[this] val onClose = new Promise[Unit]
@@ -116,10 +159,13 @@ trait CloseAwaitably extends Awaitable[Unit] {
   }
 
   def ready(timeout: Duration)(implicit permit: Awaitable.CanAwait): this.type = {
-    Await.ready(onClose, timeout)
+    onClose.ready(timeout)
     this
   }
 
   def result(timeout: Duration)(implicit permit: Awaitable.CanAwait): Unit =
-   Await.result(onClose, timeout)
+    onClose.result(timeout)
+
+  def isReady(implicit permit: Awaitable.CanAwait): Boolean =
+    onClose.isReady
 }

@@ -16,17 +16,16 @@
 
 package com.twitter.logging
 
-import java.io.{File, InputStream}
-import java.util.{Calendar, logging => javalog}
 import java.util.concurrent.ConcurrentHashMap
-import scala.collection.{JavaConversions, Map}
-import scala.collection.mutable
-import scala.io.Source
+import java.util.{logging => javalog}
+import scala.annotation.varargs
+import scala.collection.JavaConverters._
+import scala.collection.Map
 
 // replace java's ridiculous log levels with the standard ones.
 sealed abstract class Level(val name: String, val value: Int) extends javalog.Level(name, value) {
-  Logger.levelNamesMap(name) = this
-  Logger.levelsMap(value) = this
+  // for java compat
+  def get(): Level = this
 }
 
 object Level {
@@ -40,24 +39,8 @@ object Level {
   case object TRACE extends Level("TRACE", 400)
   case object ALL extends Level("ALL", Int.MinValue)
 
-  // to force them to get loaded from class files:
-  {
-    val root = Logger.root
-    val originalLevel = root.getLevel()
-    root.setLevel(OFF)
-    root.setLevel(FATAL)
-    root.setLevel(CRITICAL)
-    root.setLevel(ERROR)
-    root.setLevel(WARNING)
-    root.setLevel(INFO)
-    root.setLevel(DEBUG)
-    root.setLevel(TRACE)
-    root.setLevel(ALL)
-    root.setLevel(originalLevel)
-  }
-
-  // All we need is for the object to be initialized.
-  private[logging] def init() {}
+  private[logging] val AllLevels: Seq[Level] =
+    Seq(OFF, FATAL, CRITICAL, ERROR, WARNING, INFO, DEBUG, TRACE, ALL)
 }
 
 class LoggingException(reason: String) extends Exception(reason)
@@ -88,6 +71,7 @@ class Logger protected(val name: String, private val wrapped: javalog.Logger) {
   /**
    * Log a message, with sprintf formatting, at the desired level.
    */
+  @varargs
   final def log(level: Level, message: String, items: Any*): Unit =
     log(level, null: Throwable, message, items: _*)
 
@@ -96,6 +80,7 @@ class Logger protected(val name: String, private val wrapped: javalog.Logger) {
    * attach an exception and stack trace. The message is lazily formatted if
    * formatting is required.
    */
+  @varargs
   final def log(level: Level, thrown: Throwable, message: String, items: Any*) {
     val myLevel = getLevel
     if ((myLevel eq null) || (level.intValue >= myLevel.intValue)) {
@@ -116,20 +101,37 @@ class Logger protected(val name: String, private val wrapped: javalog.Logger) {
   final def apply(level: Level, thrown: Throwable, message: String, items: Any*) = log(level, thrown, message, items)
 
   // convenience methods:
+  @varargs
   def fatal(msg: String, items: Any*) = log(Level.FATAL, msg, items: _*)
+  @varargs
   def fatal(thrown: Throwable, msg: String, items: Any*) = log(Level.FATAL, thrown, msg, items: _*)
+  @varargs
   def critical(msg: String, items: Any*) = log(Level.CRITICAL, msg, items: _*)
+  @varargs
   def critical(thrown: Throwable, msg: String, items: Any*) = log(Level.CRITICAL, thrown, msg, items: _*)
+  @varargs
   def error(msg: String, items: Any*) = log(Level.ERROR, msg, items: _*)
+  @varargs
   def error(thrown: Throwable, msg: String, items: Any*) = log(Level.ERROR, thrown, msg, items: _*)
+  @varargs
   def warning(msg: String, items: Any*) = log(Level.WARNING, msg, items: _*)
+  @varargs
   def warning(thrown: Throwable, msg: String, items: Any*) = log(Level.WARNING, thrown, msg, items: _*)
+  @varargs
   def info(msg: String, items: Any*) = log(Level.INFO, msg, items: _*)
+  @varargs
   def info(thrown: Throwable, msg: String, items: Any*) = log(Level.INFO, thrown, msg, items: _*)
+  @varargs
   def debug(msg: String, items: Any*) = log(Level.DEBUG, msg, items: _*)
+  @varargs
   def debug(thrown: Throwable, msg: String, items: Any*) = log(Level.DEBUG, thrown, msg, items: _*)
+  @varargs
   def trace(msg: String, items: Any*) = log(Level.TRACE, msg, items: _*)
+  @varargs
   def trace(thrown: Throwable, msg: String, items: Any*) = log(Level.TRACE, thrown, msg, items: _*)
+
+  def debugLazy(msg: => AnyRef): Unit = logLazy(Level.DEBUG, null, msg)
+  def traceLazy(msg: => AnyRef): Unit = logLazy(Level.TRACE, null, msg)
 
   /**
    * Log a message, with lazy (call-by-name) computation of the message,
@@ -196,8 +198,16 @@ object NullLogger extends Logger(
 )
 
 object Logger extends Iterable[Logger] {
-  private[logging] val levelNamesMap = new mutable.HashMap[String, Level]
-  private[logging] val levelsMap = new mutable.HashMap[Int, Level]
+
+  private[this] val levelNamesMap: Map[String, Level] =
+    Level.AllLevels.map { level =>
+      level.name -> level
+    }.toMap
+
+  private[this] val levelsMap: Map[Int, Level] =
+    Level.AllLevels.map { level =>
+      level.value -> level
+    }.toMap
 
   // A cache of scala Logger objects by name.
   // Using a low concurrencyLevel (2), with the assumption that we aren't ever creating too
@@ -243,10 +253,6 @@ object Logger extends Iterable[Logger] {
 
   /** ALL is used to log everything. */
   def ALL = Level.ALL
-
-  // We need to make sure levels are initialized here, in case
-  // Logger is referred to before Level (eg. Logger.levelsMap).
-  Level.init()
 
   /**
    * Return a map of log level values to the corresponding Level objects.
@@ -350,8 +356,12 @@ object Logger extends Iterable[Logger] {
   /**
    * Iterate the Logger objects that have been created.
    */
-  def iterator: Iterator[Logger] = JavaConversions.asScalaIterator(loggersCache.values.iterator)
+  def iterator: Iterator[Logger] = loggersCache.values.iterator.asScala
 
+  /**
+   * Reset all the loggers and register new loggers
+   * @note Only one logger is permitted per namespace
+   */
   def configure(loggerFactories: List[() => Logger]) {
     loggerFactoryCache = loggerFactories
 

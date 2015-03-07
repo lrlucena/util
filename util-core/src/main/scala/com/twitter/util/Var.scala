@@ -1,9 +1,13 @@
 package com.twitter.util
 
-import java.util.concurrent.atomic.{AtomicReference, AtomicLong}
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference, AtomicReferenceArray}
+import java.util.{List => JList}
+
 import scala.annotation.tailrec
+import scala.collection.JavaConverters._
 import scala.collection.generic.CanBuildFrom
 import scala.collection.immutable
+import scala.collection.mutable.Buffer
 
 /**
  * Trait Var represents a variable. It is a reference cell which is
@@ -19,11 +23,13 @@ import scala.collection.immutable
  * @note There are no well-defined error semantics for Var. Vars are
  * computed lazily, and the updating thread will receive any
  * exceptions thrown while computing derived Vars.
+ *
+ * Note: There is a Java-friendly API for this trait: [[com.twitter.util.AbstractVar]].
  */
 trait Var[+T] { self =>
   import Var.Observer
 
-  /** 
+  /**
    * Observe this Var. `f` is invoked each time the variable changes,
    * and synchronously with the first call to this method.
    */
@@ -46,7 +52,7 @@ trait Var[+T] { self =>
   @deprecated("Use changes (Event)", "6.8.2")
   def foreach(f: T => Unit) = observe(f)
 
-  /** 
+  /**
    * Create a derived variable by applying `f` to the contained
    * value.
    */
@@ -63,14 +69,22 @@ trait Var[+T] { self =>
     def observe(depth: Int, obs: Observer[U]) = {
       val inner = new AtomicReference(Closable.nop)
       val outer = self.observe(depth, Observer(t =>
-        inner.getAndSet(f(t).observe(depth+1, obs)).close()
+        // TODO: Right now we rely on synchronous propagation; and
+        // thus also synchronous closes. We should instead perform
+        // asynchronous propagation so that it is is safe &
+        // predictable to have asynchronously closing Vars, for
+        // example. Currently the only source of potentially
+        // asynchronous closing is Var.async; here we have modified
+        // the external process to close asynchronously with the Var
+        // itself so that it is safe to Await here.
+        Await.ready(inner.getAndSet(f(t).observe(depth+1, obs)).close())
       ))
 
       Closable.sequence(outer, Closable.ref(inner))
     }
   }
 
-  def join[U](other: Var[U]): Var[(T, U)] = 
+  def join[U](other: Var[U]): Var[(T, U)] =
     for { t <- self; u <- other } yield (t, u)
 
   /**
@@ -89,13 +103,21 @@ trait Var[+T] { self =>
    * Event.
    */
   lazy val changes: Event[T] = new Event[T] {
-    def register(s: Witness[T]) = observe { newv => s.notify(newv) }
+    def register(s: Witness[T]) =
+      self observe { newv => s.notify(newv) }
   }
+  
+  /**
+   * Produce an [[Event]] reflecting the differences between
+   * each update to this [[Var]].
+   */ 
+  def diff[CC[_]: Diffable, U](implicit toCC: T <:< CC[U]): Event[Diff[CC, U]] = 
+    changes.diff
 
   /**
    * A one-shot predicate observation. The returned future
    * is satisfied with the first observed value of Var that obtains
-   * the predicate `pred`. Observation stops when the future is 
+   * the predicate `pred`. Observation stops when the future is
    * satisfied.
    *
    * Interrupting the future will also satisfy the future (with the
@@ -108,17 +130,27 @@ trait Var[+T] { self =>
       case exc => p.updateIfEmpty(Throw(exc))
     }
 
-    val o = observe { 
+    val o = observe {
       case el if pred(el) => p.updateIfEmpty(Return(el))
-      case _ => 
+      case _ =>
     }
 
     p ensure {
       o.close()
     }
   }
+
+  def sample(): T = Var.sample(this)
 }
 
+/**
+ * Abstract `Var` class for Java compatibility.
+ */
+abstract class AbstractVar[T] extends Var[T]
+
+/**
+ * Note: There is a Java-friendly API for this object: [[com.twitter.util.Vars]].
+ */
 object Var {
   /**
    * A Var observer. Observers are owned by exactly one producer,
@@ -127,7 +159,7 @@ object Var {
   private[util] class Observer[-T](observe: T => Unit) {
     private[this] var thisOwner: AnyRef = null
     private[this] var thisVersion = Long.MinValue
-    
+
     /**
      * Claim this observer with owner `newOwner`. Claiming
      * an observer gives the owner exclusive rights to publish
@@ -139,7 +171,7 @@ object Var {
         thisVersion = Long.MinValue
       }
     }
-    
+
     /**
      * Publish the given versioned value with the given owner.
      * If the owner is not current (because another has claimed
@@ -167,10 +199,10 @@ object Var {
    */
   def sample[T](v: Var[T]): T = {
     var opt: Option[T] = None
-    v.observe(v => opt = Some(v)).close()
+    v.observe(0, Observer(v => opt = Some(v))).close()
     opt.get
   }
-  
+
   object Sampled {
     def apply[T](v: T): Var[T] = value(v)
     def unapply[T](v: Var[T]): Option[T] = Some(sample(v))
@@ -196,9 +228,23 @@ object Var {
   }
 
   /**
-   * Create a new, constant, v-valued Var.
+   * Patch reconstructs a [[Var]] based on observing the incremental
+   * changes presented in the underlying [[Diff]]s.
+   * 
+   * Note that this eagerly subscribes to the event stream;
+   * it is unsubscribed whenever the returned Var is collected.
    */
-  def value[T](v: T): Var[T] = new Var[T] {
+  def patch[CC[_]: Diffable, T](diffs: Event[Diff[CC, T]]): Var[CC[T]] = {
+    val v = Var(Diffable.empty: CC[T])
+    Closable.closeOnCollect(diffs respond { diff =>
+      synchronized {
+        v() = diff.patch(v())
+      }
+    }, v)
+    v
+  }
+
+  private case class Value[T](v: T) extends Var[T] {
     protected def observe(depth: Int, obs: Observer[T]): Closable = {
       obs.claim(this)
       obs.publish(this, v, 0)
@@ -206,23 +252,32 @@ object Var {
     }
   }
 
-  /** 
+  /**
+   * Create a new, constant, v-valued Var.
+   */
+  def value[T](v: T): Var[T] = Value(v)
+
+  /**
    * Collect a collection of Vars into a Var of collection.
    */
   def collect[T, CC[X] <: Traversable[X]](vars: CC[Var[T]])
       (implicit newBuilder: CanBuildFrom[CC[T], T, CC[T]], cm: ClassManifest[T])
       : Var[CC[T]] = async(newBuilder().result) { v =>
     val N = vars.size
-    val cur = new Array[T](N)
-    var filling = true
+    val cur = new AtomicReferenceArray[T](N)
+    @volatile var filling = true
     def build() = {
       val b = newBuilder()
-      b ++= cur
+      var i = 0
+      while (i < N) {
+        b += cur.get(i)
+        i += 1
+      }
       b.result()
     }
 
-    def publish(i: Int, newi: T) = synchronized {
-      cur(i) = newi
+    def publish(i: Int, newi: T) = {
+      cur.set(i, newi)
       if (!filling) v() = build()
     }
 
@@ -230,16 +285,26 @@ object Var {
     var i = 0
     for (u <- vars) {
       val j = i
-      closes(j) = u observe { newj => publish(j, newj) }
+      closes(j) = u observe (0, Observer(newj => publish(j, newj)))
       i += 1
     }
 
-    synchronized {
-      filling = false
-      v() = build()
-    }
+    filling = false
+    v() = build()
 
     Closable.all(closes:_*)
+  }
+
+  /**
+   * Collect a List of Vars into a new Var of List.
+   *
+   * @param vars a java.util.List of Vars
+   * @return a Var[java.util.List[A]] containing the collected values from vars.
+   */
+  def collect[T <: Object](vars: JList[Var[T]]): Var[JList[T]] = {
+    // we cast to Object and back because we need a ClassManifest[T]
+    val list = vars.asScala.asInstanceOf[Buffer[Var[Object]]]
+    collect(list).map(_.asJava).asInstanceOf[Var[JList[T]]]
   }
 
   private object create {
@@ -252,7 +317,7 @@ object Var {
    * Create a new Var whose values are provided asynchronously by
    * `update`. The returned Var is dormant until it is observed:
    * `update` is called by-need. Such observations are also reference
-   * counted so that simultaneous observervations do not result in
+   * counted so that simultaneous observations do not result in
    * multiple invocations of `update`. When the last observer stops
    * observing, the [[com.twitter.util.Closable]] returned
    * from `update` is closed. Subsequent observations result in a new
@@ -270,7 +335,7 @@ object Var {
   def async[T](empty: T)(update: Updatable[T] => Closable): Var[T] = new Var[T] {
     import create._
     private var state: State[T] = Idle
-    
+
     private val closable = Closable.make { deadline =>
       synchronized {
         state match {
@@ -278,7 +343,11 @@ object Var {
             Future.Done
           case Observing(1, _, c) =>
             state = Idle
+            // We close the external process asynchronously from the
+            // async Var so that it is safe to Await Var.close() in
+            // flatMap. (See the TODO there.)
             c.close(deadline)
+            Future.Done
           case Observing(n, v, c) =>
             state = Observing(n-1, v, c)
             Future.Done
@@ -319,7 +388,9 @@ trait Extractable[T] {
 private object UpdatableVar {
   import Var.Observer
 
-  case class Party[T](obs: Observer[T], depth: Int, n: Long)
+  case class Party[T](obs: Observer[T], depth: Int, n: Long) {
+    @volatile var active = true
+  }
 
   case class State[T](value: T, version: Long, parties: immutable.SortedSet[Party[T]]) {
     def -(p: Party[T]) = copy(parties=parties-p)
@@ -338,9 +409,9 @@ private object UpdatableVar {
   }
 }
 
-private class UpdatableVar[T](init: T) 
-    extends Var[T] 
-    with Updatable[T] 
+private[util] class UpdatableVar[T](init: T)
+    extends Var[T]
+    with Updatable[T]
     with Extractable[T] {
   import UpdatableVar._
   import Var.Observer
@@ -348,7 +419,7 @@ private class UpdatableVar[T](init: T)
   private[this] val n = new AtomicLong(0)
   private[this] val state = new AtomicReference(
     State[T](init, 0, immutable.SortedSet.empty))
-  
+
   @tailrec
   private[this] def cas(next: State[T] => State[T]): State[T] = {
     val from = state.get
@@ -360,8 +431,13 @@ private class UpdatableVar[T](init: T)
 
   def update(newv: T): Unit = synchronized {
     val State(value, version, parties) = cas(_ := newv)
-    for (Party(obs, _, _) <- parties)
-      obs.publish(this, value, version)
+    for (p@Party(obs, _, _) <- parties) {
+      // An antecedent update may have closed the current
+      // party (e.g. flatMap does this); we need to check that
+      // the party is active here in order to prevent stale updates.
+      if (p.active)
+        obs.publish(this, value, version)
+    }
   }
 
   protected def observe(depth: Int, obs: Observer[T]): Closable = {
@@ -372,6 +448,7 @@ private class UpdatableVar[T](init: T)
 
     new Closable {
       def close(deadline: Time) = {
+        party.active = false
         cas(_ - party)
         Future.Done
       }
@@ -380,3 +457,9 @@ private class UpdatableVar[T](init: T)
 
   override def toString = "Var("+state.get.value+")@"+hashCode
 }
+
+/**
+ * Java adaptation of `Var[T] with Updatable[T] with Extractable[T]`.
+ */
+class ReadWriteVar[T](init: T) extends UpdatableVar[T](init)
+

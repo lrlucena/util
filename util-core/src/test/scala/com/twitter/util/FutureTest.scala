@@ -8,14 +8,18 @@ import org.mockito.Matchers.any
 import org.mockito.Mockito.{never, verify, when}
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.stubbing.Answer
+import org.scalacheck.{Gen, Arbitrary}
 import org.scalatest.WordSpec
 import org.scalatest.junit.JUnitRunner
 import org.scalatest.mock.MockitoSugar
+import org.scalatest.prop.GeneratorDrivenPropertyChecks
 import scala.collection.JavaConverters._
+import scala.runtime.NonLocalReturnControl
 import scala.util.control.ControlThrowable
+import scala.util.Random
 
 @RunWith(classOf[JUnitRunner])
-class FutureTest extends WordSpec with MockitoSugar {
+class FutureTest extends WordSpec with MockitoSugar with GeneratorDrivenPropertyChecks {
   implicit def futureMatcher[A](future: Future[A]) = new {
     def mustProduce(expected: Try[A]) {
       expected match {
@@ -178,6 +182,40 @@ class FutureTest extends WordSpec with MockitoSugar {
             iteration.raise(new Exception)
             assert((queue.asScala forall ( _.handled.isDefined)) === true)
           }
+        }
+      }
+
+      "proxyTo" should {
+        "reject satisfied promises" in {
+          val str = "um um excuse me um"
+          val p1 = new Promise[String]()
+          p1.update(Return(str))
+
+          val p2 = new Promise[String]()
+          val ex = intercept[IllegalStateException] { p2.proxyTo(p1) }
+          assert(ex.getMessage.contains(str))
+        }
+
+        "proxies success" in {
+          val p1 = new Promise[Int]()
+          val p2 = new Promise[Int]()
+          p2.proxyTo(p1)
+          p2.update(Return(5))
+          assert(5 === Await.result(p1))
+          assert(5 === Await.result(p2))
+        }
+
+        "proxies failure" in {
+          val p1 = new Promise[Int]()
+          val p2 = new Promise[Int]()
+          p2.proxyTo(p1)
+
+          val t = new RuntimeException("wurmp")
+          p2.update(Throw(t))
+          val ex1 = intercept[RuntimeException] { Await.result(p1) }
+          assert(ex1.getMessage === t.getMessage)
+          val ex2 = intercept[RuntimeException] { Await.result(p2) }
+          assert(ex2.getMessage === t.getMessage)
         }
       }
 
@@ -345,6 +383,34 @@ class FutureTest extends WordSpec with MockitoSugar {
         }
       }
 
+      "interruptible" should {
+        "properly ignore the underlying future on interruption" in {
+          val p = Promise[Unit]
+          val i = p.interruptible()
+          val e = new Exception
+          i.raise(e)
+          p.setDone()
+          assert(p.poll === Some(Return(())))
+          assert(i.poll === Some(Throw(e)))
+        }
+
+        "respect the underlying future" in {
+          val p = Promise[Unit]
+          val i = p.interruptible()
+          p.setDone()
+          assert(p.poll === Some(Return(())))
+          assert(i.poll === Some(Return(())))
+        }
+
+        "do nothing for const" in {
+          val f = const.value(())
+          val i = f.interruptible()
+          i.raise(new Exception())
+          assert(f.poll === Some(Return(())))
+          assert(i.poll === Some(Return(())))
+        }
+      }
+
       "collect" should {
         trait CollectHelper {
           val p0, p1 = new HandledPromise[Int]
@@ -384,6 +450,31 @@ class FutureTest extends WordSpec with MockitoSugar {
             assert((ps.count(_.handled.isDefined)) === 0)
             f.raise(new Exception)
             assert((ps.count(_.handled.isDefined)) === 2)
+          }
+        }
+
+        "accept maps of futures" in {
+          val map = Map(
+            "1" -> Future.value("1"),
+            "2" -> Future.value("2")
+          )
+
+          assert(Await.result(Future.collect(map)) === Map("1" -> "1", "2" -> "2"))
+        }
+
+        "work correctly if the given map is empty" in {
+          val map = Map.empty[String, Future[String]]
+          assert(Await.result(Future.collect(map)).isEmpty)
+        }
+
+        "return future exception if one of the map values is future exception" in {
+          val map = Map(
+            "1" -> Future.value("1"),
+            "2" -> Future.exception(new Exception)
+          )
+
+          intercept[Exception] {
+            Await.result(Future.collect(map))
           }
         }
       }
@@ -430,106 +521,6 @@ class FutureTest extends WordSpec with MockitoSugar {
             f.raise(new Exception)
             assert(ps.count(_.handled.isDefined) === 2)
           }
-        }
-      }
-
-      "select" should {
-        "return the first result" which {
-          def tryBothForIndex(i: Int) = {
-            "success (%d)".format(i) in {
-              val fs = (0 until 10 map { _ => new Promise[Int] }) toArray
-              val f = Future.select(fs)
-              assert(f.isDefined === false)
-              fs(i)() = Return(1)
-              assert(f.isDefined === true)
-              assert(Await.result(f) match {
-                case (Return(1), rest) =>
-                  assert(rest.size === 9)
-                  val elems = fs.slice(0, i) ++ fs.slice(i + 1, 10)
-                  assert(rest.size === elems.size)
-                  assert(rest.diff(elems).isEmpty)
-                  true
-              })
-            }
-
-            "failure (%d)".format(i) in {
-              val fs = (0 until 10 map { _ => new Promise[Int] }) toArray
-              val f = Future.select(fs)
-              assert(f.isDefined === false)
-              val e = new Exception("sad panda")
-              fs(i)() = Throw(e)
-              assert(f.isDefined === true)
-              assert(Await.result(f) match {
-                case (Throw(e), rest) =>
-                  assert(rest.size === 9)
-                  val elems = fs.slice(0, i) ++ fs.slice(i + 1, 10)
-                  assert(rest.size === elems.size)
-                  assert(elems.diff(rest).isEmpty)
-                  true
-              })
-            }
-          }
-
-          // Ensure this works for all indices:
-          0 until 10 foreach { tryBothForIndex(_) }
-        }
-
-        "fail if we attempt to select an empty future sequence" in {
-          val f = Future.select(Seq())
-          assert(f.isDefined === true)
-          val e = new IllegalArgumentException("empty future list!")
-          val actual = intercept[IllegalArgumentException] { Await.result(f) }
-          assert(actual.getMessage === e.getMessage)
-        }
-
-        "propagate interrupts" in {
-          val fs = for (_ <- 0 until 10 toArray) yield new HandledPromise[Int]
-          Future.select(fs).raise(new Exception)
-          assert((fs forall (_.handled.isDefined)) === true)
-        }
-      }
-
-      "selectIndex" should {
-        "return the first result" when {
-          def tryBothForIndex(i: Int) = {
-            "success (%d)".format(i) in {
-              val fs = Seq.fill(10) { new Promise[Int] } toArray
-              val fPos = Future.selectIndex(fs)
-              assert(!fPos.isDefined)
-              fs(i).setValue(1)
-              assert(fPos.isDefined)
-              assert(Await.result(fPos) === i)
-            }
-
-            "failure (%d)".format(i) in {
-              val fs = Seq.fill(10) { new Promise[Int] } toArray
-              val fPos = Future.selectIndex(fs)
-              assert(!fPos.isDefined)
-              val e = new Exception("sad panda")
-              fs(i).setException(e)
-              assert(fPos.isDefined)
-              assert(Await.result(fPos) === i)
-            }
-          }
-
-          // Ensure this works for all indices:
-          0 until 10 foreach { tryBothForIndex(_) }
-        }
-
-        "fail if we attempt to select an empty future sequence" in {
-          val f = Future.selectIndex(IndexedSeq())
-          assert(f.isDefined)
-          val e = intercept[IllegalArgumentException] {
-            Await.result(f)
-          }
-          val expected = "empty future list"
-          assert(e.getMessage === expected)
-        }
-
-        "propagate interrupts" in {
-          val fs = Array.fill(10) { new HandledPromise[Int] }
-          Future.selectIndex(fs).raise(new Exception)
-          assert(fs forall (_.handled.isDefined))
         }
       }
 
@@ -860,6 +851,33 @@ class FutureTest extends WordSpec with MockitoSugar {
           } mustProduce(Throw(e))
         }
 
+        "non local returns executed during transformation" in {
+          def ret(): String = {
+            val f = const.value(1).transform {
+              case Return(v) =>
+                val fn = { () =>
+                  return "OK"
+                }
+                fn()
+                Future.value(ret())
+              case Throw(t) => const.value(0)
+            }
+            assert(f.poll.isDefined)
+            val e = intercept[FutureNonLocalReturnControl] {
+              f.poll.get.get
+            }
+
+            val g = e.getCause match {
+              case t: NonLocalReturnControl[_] => t.asInstanceOf[NonLocalReturnControl[String]]
+              case _ =>
+                fail()
+            }
+            assert(g.value === "OK")
+            "bleh"
+          }
+          ret()
+        }
+
         "fatal exceptions thrown during transformation" in {
           val e = new FatalException()
 
@@ -925,7 +943,7 @@ class FutureTest extends WordSpec with MockitoSugar {
                 assert(f2.handled === None)
                 f.raise(new Exception)
                 assert(f1.handled.isDefined)
-                f1() = Return(2)
+                f1() = Return.Unit
                 assert(f2.handled.isDefined)
               }
 
@@ -1294,6 +1312,13 @@ class FutureTest extends WordSpec with MockitoSugar {
           assert(p.within(Duration.Top) === p)
         }
 
+        "when future already satisfied" in {
+          implicit val timer = new NullTimer
+          val p = new Promise[Int]
+          p.setValue(3)
+          assert(p.within(1.minute) === p)
+        }
+
         "interruption" in Time.withCurrentTimeFrozen { tc =>
           implicit val timer = new MockTimer
           val p = new HandledPromise[Int]
@@ -1374,6 +1399,13 @@ class FutureTest extends WordSpec with MockitoSugar {
           assert(p.raiseWithin(Duration.Top) === p)
         }
 
+        "when future already satisfied" in {
+          implicit val timer = new NullTimer
+          val p = new Promise[Int]
+          p.setValue(3)
+          assert(p.raiseWithin(1.minute) === p)
+        }
+
         "interruption" in Time.withCurrentTimeFrozen { tc =>
           implicit val timer = new MockTimer
           val p = new HandledPromise[Int]
@@ -1450,6 +1482,23 @@ class FutureTest extends WordSpec with MockitoSugar {
   test("ConstFuture", new MkConst { def apply[A](r: Try[A]) = Future.const(r) })
   test("Promise", new MkConst { def apply[A](r: Try[A]) = new Promise(r) })
 
+  "Future.apply" should {
+    "fail on NLRC" in {
+      def ok(): String = {
+        val f = Future(return "OK")
+        val t = intercept[FutureNonLocalReturnControl] {
+          f.poll.get.get
+        }
+        val nlrc = intercept[NonLocalReturnControl[String]] {
+          throw t.getCause
+        }
+        assert(nlrc.value === "OK")
+        "NOK"
+      }
+      assert(ok() === "NOK")
+    }
+  }
+
   "Future.None" should {
     "always be defined" in {
       assert(Future.None.isDefined === true)
@@ -1517,16 +1566,141 @@ class FutureTest extends WordSpec with MockitoSugar {
       f mustProduce Throw(e)
       assert(task.isCancelled)
     }
+    
+    "Return Future.Done for durations <= 0" in {
+      implicit val timer = new MockTimer
+      assert(Future.sleep(Duration.Zero) eq Future.Done)
+      assert(Future.sleep((-10).seconds) eq Future.Done)
+      assert(timer.tasks.isEmpty)
+    }
   }
 
-  // TODO(John Sirois):  Kill this mvn test hack when pants takes over.
-  "Java" should {
-    "work" in {
-      val test = new FutureCompilationTest()
-      test.testFutureCastMap()
-      test.testFutureCastFlatMap()
-      test.testTransformedBy()
-      assert(true === true)
+  "Future.select" should {
+    import Arbitrary.arbitrary
+    val genLen = Gen.choose(1, 10)
+
+    "return the first result" which {
+      forAll(genLen, arbitrary[Boolean]) { (n, fail) =>
+        val ps = ((0 until n) map(_ => new Promise[Int])).toList
+        assert(ps.map(_.waitqLength).sum === 0)
+        val f = Future.select(ps)
+        val i = Random.nextInt(ps.length)
+        val e = new Exception("sad panda")
+        val t = if (fail) Throw(e) else Return(i)
+        ps(i).update(t)
+        assert(f.isDefined)
+        val (ft, fps) = Await.result(f)
+        assert(ft === t)
+        assert(fps.toSet === (ps.toSet - ps(i)))
+      }
+    }
+
+    "not accumulate listeners when losing or" in {
+      val p = new Promise[Unit]
+      val q = new Promise[Unit]
+      (p or q)
+      assert(p.waitqLength === 1)
+      q.setDone()
+      assert(p.waitqLength === 0)
+    }
+
+    "not accumulate listeners when losing select" in {
+      val p = new Promise[Unit]
+      val q = new Promise[Unit]
+      val f = Future.select(Seq(p, q))
+      assert(p.waitqLength === 1)
+      q.setDone()
+      assert(p.waitqLength === 0)
+    }
+
+    "not accumulate listeners if not selected" in {
+      forAll(genLen, arbitrary[Boolean]) { (n, fail) =>
+        val ps = ((0 until n) map(_ => new Promise[Int])).toList
+        assert(ps.map(_.waitqLength).sum === 0)
+        val f = Future.select(ps)
+        assert(ps.map(_.waitqLength).sum === n)
+        val i = Random.nextInt(ps.length)
+        val e = new Exception("sad panda")
+        val t = if (fail) Throw(e) else Return(i)
+        f respond { _ => () }
+        assert(ps.map(_.waitqLength).sum === n)
+        ps(i).update(t)
+        assert(ps.map(_.waitqLength).sum === 0)
+      }
+    }
+
+    "fail if we attempt to select an empty future sequence" in {
+      val f = Future.select(Nil)
+      assert(f.isDefined)
+      val e = new IllegalArgumentException("empty future list")
+      val actual = intercept[IllegalArgumentException] { Await.result(f) }
+      assert(actual.getMessage === e.getMessage)
+    }
+
+    "propagate interrupts" in {
+      val fs = (0 until 10).map(_ => new HandledPromise[Int])
+      Future.select(fs).raise(new Exception)
+      assert(fs.forall(_.handled.isDefined))
+    }
+  }
+
+  // These tests are almost a carbon copy of the "Future.select" tests, they
+  // should evolve in-sync.
+  "Future.selectIndex" should {
+    import Arbitrary.arbitrary
+    val genLen = Gen.choose(1, 10)
+
+    "return the first result" which {
+      forAll(genLen, arbitrary[Boolean]) { (n, fail) =>
+        val ps = ((0 until n) map(_ => new Promise[Int])).toIndexedSeq
+        assert(ps.map(_.waitqLength).sum === 0)
+        val f = Future.selectIndex(ps)
+        val i = Random.nextInt(ps.length)
+        val e = new Exception("sad panda")
+        val t = if (fail) Throw(e) else Return(i)
+        ps(i).update(t)
+        assert(f.isDefined)
+        assert(Await.result(f) === i)
+      }
+    }
+
+    "not accumulate listeners when losing select" in {
+      val p = new Promise[Unit]
+      val q = new Promise[Unit]
+      val f = Future.selectIndex(IndexedSeq(p, q))
+      assert(p.waitqLength === 1)
+      q.setDone()
+      assert(p.waitqLength === 0)
+    }
+
+    "not accumulate listeners if not selected" in {
+      forAll(genLen, arbitrary[Boolean]) { (n, fail) =>
+        val ps = ((0 until n) map(_ => new Promise[Int])).toIndexedSeq
+        assert(ps.map(_.waitqLength).sum === 0)
+        val f = Future.selectIndex(ps)
+        assert(ps.map(_.waitqLength).sum === n)
+        val i = Random.nextInt(ps.length)
+        val e = new Exception("sad panda")
+        val t = if (fail) Throw(e) else Return(i)
+        f respond { _ => () }
+        assert(ps.map(_.waitqLength).sum === n)
+        ps(i).update(t)
+        assert(ps.map(_.waitqLength).sum === 0)
+      }
+    }
+
+    "fail if we attempt to select an empty future sequence" in {
+      val f = Future.selectIndex(IndexedSeq.empty)
+      assert(f.isDefined)
+      val e = new IllegalArgumentException("empty future list")
+      val actual = intercept[IllegalArgumentException] { Await.result(f) }
+      assert(actual.getMessage === e.getMessage)
+    }
+
+    "propagate interrupts" in {
+      val fs = (0 until 10).map(_ => new HandledPromise[Int])
+      Future.selectIndex(fs).raise(new Exception)
+      assert(fs.forall(_.handled.isDefined))
     }
   }
 }

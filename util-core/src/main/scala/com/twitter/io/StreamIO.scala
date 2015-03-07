@@ -1,7 +1,8 @@
 package com.twitter.io
 
+import java.io.{ByteArrayOutputStream, InputStream, OutputStream}
+
 import scala.annotation.tailrec
-import java.io.{InputStream, OutputStream, ByteArrayOutputStream}
 
 object StreamIO {
   /**
@@ -15,7 +16,7 @@ object StreamIO {
     bufferSize:   Int = 1024
   ) {
     val buf = new Array[Byte](bufferSize)
-    inputStream.read(buf, 0, buf.size) match {
+    inputStream.read(buf, 0, buf.length) match {
       case -1 => ()
       case n =>
         outputStream.write(buf, 0, n)

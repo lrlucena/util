@@ -1,9 +1,10 @@
 package com.twitter.zk
 
+import org.apache.zookeeper.ZooKeeper
+
 import com.twitter.concurrent.{Broker, Offer, Serialized}
 import com.twitter.logging.Logger
-import com.twitter.util.{Duration, Future, Promise, TimeoutException, Timer, Return, Await}
-import org.apache.zookeeper.ZooKeeper
+import com.twitter.util.{Await, Duration, Future, Promise, Return, TimeoutException, Timer}
 
 /**
  * An Asynchronous ZooKeeper Client.
@@ -12,13 +13,14 @@ case class NativeConnector(
   connectString: String,
   connectTimeout: Option[Duration],
   sessionTimeout: Duration,
-  timer: Timer)
+  timer: Timer,
+  authenticate: Option[AuthInfo] = None)
 extends Connector with Serialized {
   override val name = "native-zk-connector"
 
 
   protected[this] def mkConnection = {
-    new NativeConnector.Connection(connectString, connectTimeout, sessionTimeout, timer, log)
+    new NativeConnector.Connection(connectString, connectTimeout, sessionTimeout, authenticate, timer, log)
   }
 
   onSessionEvent {
@@ -47,7 +49,8 @@ extends Connector with Serialized {
       connection = Some(c)
       c
     } apply()
-  }.flatten rescue { case e: NativeConnector.ConnectTimeoutException =>
+  }.flatten
+    .rescue { case e: NativeConnector.ConnectTimeoutException =>
     release() flatMap { _ => Future.exception(e) }
   }
 
@@ -76,6 +79,12 @@ object NativeConnector {
     NativeConnector(connectString, Some(connectTimeout), sessionTimeout, timer)
   }
 
+  def apply(connectString: String, connectTimeout: Duration, sessionTimeout: Duration, authenticate: Option[AuthInfo])
+           (implicit timer: Timer): NativeConnector = {
+    NativeConnector(connectString, Some(connectTimeout), sessionTimeout, timer, authenticate)
+  }
+
+
   case class ConnectTimeoutException(connectString: String, timeout: Duration)
     extends TimeoutException("timeout connecting to %s after %s".format(connectString, timeout))
 
@@ -89,6 +98,7 @@ object NativeConnector {
       connectString: String,
       connectTimeout: Option[Duration],
       sessionTimeout: Duration,
+      authenticate: Option[AuthInfo],
       timer: Timer,
       log: Logger) {
 
@@ -110,7 +120,7 @@ object NativeConnector {
 
     /**
      * Publish session events, but intercept Connected events and use them to satisfy the pending
-     * connection promise if possible.
+     * connection promise if possible, and add the authentication handle.
      */
     val sessionEvents: Offer[StateEvent] = {
       val broker = new Broker[StateEvent]
@@ -118,6 +128,10 @@ object NativeConnector {
         sessionBroker.recv sync() map { StateEvent(_) } onSuccess {
           case StateEvent.Connected => zookeeper foreach { zk =>
             connectPromise.updateIfEmpty(Return(zk))
+            authenticate foreach { auth =>
+              log.info("Authenticating to zk as %s".format(new String(auth.data, "UTF-8")))
+              zk.addAuthInfo(auth.mode, auth.data)
+            }
           }
           case _ =>
         } flatMap { broker.send(_).sync() } ensure loop()

@@ -1,3 +1,8 @@
 scala_library(name='scala',
-  sources=rglobs('*.scala')
+  provides = scala_artifact(
+    org = 'com.twitter',
+    name = 'util-hashing',
+    repo = artifactory,
+  ),
+  sources=rglobs('*.scala'),
 )

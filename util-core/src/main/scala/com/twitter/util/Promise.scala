@@ -1,9 +1,11 @@
 package com.twitter.util
 
 import com.twitter.concurrent.Scheduler
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.annotation.tailrec
 import scala.collection.mutable
+import scala.runtime.NonLocalReturnControl
 
 object Promise {
   /**
@@ -19,9 +21,10 @@ object Promise {
   }
 
   /**
-   * Detach an object from another.
+   * A template trait for [[com.twitter.util.Promise Promises]] that are derived
+   * and capable of being detached from other Promises.
    */
-  trait Detachable {
+  trait Detachable { _: Promise[_] =>
     /**
      * Returns true if successfully detached, will return true at most once.
      *
@@ -31,11 +34,15 @@ object Promise {
     def detach(): Boolean
   }
 
-  private class DetachablePromise[A](parent: Promise[_ <: A])
-      extends Promise[A] with Promise.K[A] with Detachable {
-    parent.continue(this)
+  /**
+   * A detachable [[com.twitter.util.Promise]].
+   */
+  private class DetachablePromise[A](underlying: Promise[_ <: A])
+    extends Promise[A] with Promise.K[A] with Detachable
+  {
+    underlying.continue(this)
 
-    def detach(): Boolean = parent.detach(this)
+    def detach(): Boolean = underlying.detach(this)
 
     // This is only called after the parent has been successfully satisfied
     def apply(result: Try[A]) {
@@ -91,6 +98,7 @@ object Promise {
     private[this] def k(r: Try[A]) = {
       promise.become(
         try f(r) catch {
+          case e: NonLocalReturnControl[_] => Future.exception(new FutureNonLocalReturnControl(e))
           case NonFatal(e) => Future.exception(e)
         }
       )
@@ -139,6 +147,7 @@ object Promise {
   private val emptyState: State[Nothing] = Waiting(null, Nil)
   private val unsafe = Unsafe()
   private val stateOff = unsafe.objectFieldOffset(classOf[Promise[_]].getDeclaredField("state"))
+  private val AlwaysUnit: Any => Unit = scala.Function.const(()) _
 
   sealed trait Responder[A] extends Future[A] {
     protected[util] def depth: Short
@@ -181,6 +190,9 @@ object Promise {
     def result(timeout: Duration)(implicit permit: Awaitable.CanAwait): A =
       parent.result(timeout)
 
+    def isReady(implicit permit: Awaitable.CanAwait): Boolean =
+      parent.isReady
+
     def poll = parent.poll
 
     override def isDefined = parent.isDefined
@@ -194,6 +206,10 @@ object Promise {
 
   // PUBLIC API
 
+  /**
+   * Indicates that an attempt to satisfy a [[com.twitter.util.Promise]] was made
+   * after that promise had already been satisfied.
+   */
   case class ImmutableResult(message: String) extends Exception(message)
 
   /** Create a new, empty, promise of type {{A}}. */
@@ -220,32 +236,40 @@ object Promise {
   }
 
   /**
-   * Create a derivative promise that will be satisfied with the result of the parent.
-   * However, if the derivative promise is detached before the parent is satisfied,
-   * it can just be used as a normal Promise.
+   * Create a derivative promise that will be satisfied with the result of the
+   * parent.
    *
-   * The contract for Detachable is to only do non-idempotent side-effects after
-   * detaching.  Here, the pertinent side-effect is satisfying the Promise.
+   * If the derivative promise is detached before the parent is satisfied, then
+   * it becomes disconnected from the parent and can be used as a normal,
+   * unlinked Promise.
    *
+   * By the contract of `Detachable`, satisfaction of the Promise must occur
+   * ''after'' detachment. Promises should only ever be satisfied after they are
+   * successfully detached (thus satisfaction is the responsibility of the
+   * detacher).
+   *
+   * Ex:
+   *
+   * {{{
    * val f: Future[Unit]
    * val p: Promise[Unit] with Detachable = Promise.attached(f)
    * ...
    * if (p.detach()) p.setValue(())
+   * }}}
    */
   def attached[A](parent: Future[A]): Promise[A] with Detachable = parent match {
     case p: Promise[_] =>
-      new DetachablePromise[A](p)
-    case _ => {
-      new Promise[A] with Detachable {
+      new DetachablePromise[A](p.asInstanceOf[Promise[A]])
+    case _ =>
+      val p = new Promise[A] with Detachable {
         private[this] val detached = new AtomicBoolean(false)
 
         def detach(): Boolean = detached.compareAndSet(false, true)
-
-        parent.respond { case t =>
-          if (detach()) update(t)
-        }
       }
-    }
+      parent respond { case t =>
+        if (p.detach()) p.update(t)
+      }
+      p
   }
 }
 
@@ -270,7 +294,7 @@ object Promise {
  *
  * `Promise.become` merges two promises: they are declared equivalent.
  * `become` merges the states of the two promises, and links one to the
- * other. Thus promises support the analog to tail-call eliminination: no
+ * other. Thus promises support the analog to tail-call elimination: no
  * space leak is incurred from `flatMap` in the tail position since
  * intermediate promises are merged into the root promise.
  *
@@ -380,11 +404,20 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
           setInterruptHandler(f)
 
       case Interrupted(_, signal) =>
-        if (f.isDefinedAt(signal))
-          f(signal)
+        f.applyOrElse(signal, Promise.AlwaysUnit)
 
       case Done(_) => // ignore
     }
+  }
+
+  // Useful for debugging waitq.
+  private[util] def waitqLength: Int = state match {
+    case Waiting(first, rest) if first == null => rest.length
+    case Waiting(first, rest) => rest.length + 1
+    case Interruptible(waitq, _) => waitq.length
+    case Transforming(waitq, _) => waitq.length
+    case Interrupted(waitq, _) => waitq.length
+    case Done(_) | Linked(_) => 0
   }
 
   /**
@@ -422,8 +455,7 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
     case Linked(p) => p.raise(intr)
     case s@Interruptible(waitq, handler) =>
       if (!cas(s, Interrupted(waitq, intr))) raise(intr) else {
-        if (handler.isDefinedAt(intr))
-          handler(intr)
+        handler.applyOrElse(intr, Promise.AlwaysUnit)
       }
 
     case s@Transforming(waitq, other) =>
@@ -492,17 +524,19 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
       case Waiting(_, _) | Interruptible(_, _) | Interrupted(_, _) | Transforming(_, _) =>
         val condition = new java.util.concurrent.CountDownLatch(1)
         respond { _ => condition.countDown() }
-        val (v, u) = timeout.inTimeUnit
         Scheduler.flush()
-        if (condition.await(v, u)) this
+        if (condition.await(timeout.inNanoseconds, TimeUnit.NANOSECONDS)) this
         else throw new TimeoutException(timeout.toString)
     }
 
   @throws(classOf[Exception])
   def result(timeout: Duration)(implicit permit: Awaitable.CanAwait): A = {
-    val Done(theTry) = ready(timeout).compress().theState
+    val Done(theTry) = ready(timeout).compress().theState()
     theTry()
   }
+
+  def isReady(implicit permit: Awaitable.CanAwait): Boolean =
+    isDefined
 
   /**
    * Returns this promise's interrupt if it is interrupted.
@@ -536,6 +570,10 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
    * (where `a` and `b` may resolve as such transitively).
    */
   def become(other: Future[A]) {
+    if (isDefined) {
+      val current = Await.result(liftToTry)
+      throw new IllegalStateException(s"cannot become() on an already satisfied promise: $current")
+    }
     if (other.isInstanceOf[Promise[_]]) {
       val that = other.asInstanceOf[Promise[A]]
       that.link(compress())
@@ -575,14 +613,19 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
    */
   def update(result: Try[A]) {
     updateIfEmpty(result) || {
-      throw new ImmutableResult("Result set multiple times: " + result)
+      val current = Await.result(liftToTry)
+      throw new ImmutableResult(s"Result set multiple times. Value='$current', New='$result'")
     }
   }
 
   /**
-   * Populate the Promise with the given Try. The try can either be a
-   * value or an exception. setValue and setException are generally
+   * Populate the Promise with the given Try. The Try can either be a
+   * value or an exception. `setValue` and `setException` are generally
    * more readable methods to use.
+   *
+   * @note Invoking `updateIfEmpty` without checking the boolean result is almost
+   * never the right approach. Doing so is generally unsafe unless race
+   * conditions are acceptable.
    *
    * @return true only if the result is updated, false if it was already set.
    */
@@ -641,12 +684,19 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
     }
   }
 
+  /**
+   * Should only be called when this Promise has already been fulfilled
+   * or it is becoming another Future via `become`.
+   */
   protected final def compress(): Promise[A] = state match {
     case s@Linked(p) =>
       val target = p.compress()
+      // due to the assumptions stated above regarding when this can be called,
+      // there should never be a `cas` fail.
       cas(s, Linked(target))
       target
-    case _ => this
+    case _ =>
+      this
   }
 
   @tailrec
@@ -722,5 +772,4 @@ class Promise[A] extends Future[A] with Promise.Responder[A] {
     case Done(res) => true
     case Waiting(_, _) | Interruptible(_, _) | Interrupted(_, _) | Transforming(_, _) => false
   }
-
 }

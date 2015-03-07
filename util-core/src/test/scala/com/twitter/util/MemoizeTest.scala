@@ -1,12 +1,14 @@
 package com.twitter.util
 
-import com.twitter.conversions.time._
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{CountDownLatch => JavaCountDownLatch, TimeUnit}
+import java.util.concurrent.{TimeUnit, CountDownLatch => JavaCountDownLatch}
+
 import org.junit.runner.RunWith
 import org.mockito.Mockito._
 import org.scalatest.FunSuite
 import org.scalatest.junit.JUnitRunner
+
+import com.twitter.conversions.time._
 
 @RunWith(classOf[JUnitRunner])
 class MemoizeTest extends FunSuite {
@@ -100,5 +102,57 @@ class MemoizeTest extends FunSuite {
 
     // The exception plus another successful call:
     assert(callCount.get() === 2)
+  }
+
+  test("Memoize.snappable: produce map of memoized computations") {
+    val memoizer = Memoize.snappable[Int, Int] { _ + 1 }
+    assert(memoizer.snap.isEmpty)
+
+    assert(2 == memoizer(1))
+    assert(2 === memoizer(1))
+    assert(3 == memoizer(2))
+    expectResult(Map(1 -> 2, 2 -> 3))(memoizer.snap)
+  }
+
+  test("Memoize.snappable: snap ignores in-process computations") {
+    val callTriggeredLatch = new JavaCountDownLatch(1)
+    val callReadyLatch = new JavaCountDownLatch(1)
+
+    val memoizer = Memoize.snappable[Int, Int] {
+      case 2 =>
+        callReadyLatch.await(10, TimeUnit.SECONDS)
+        3
+      case i => i + 1
+    }
+    assert(memoizer.snap.isEmpty)
+
+    val result = FuturePool.unboundedPool {
+      callTriggeredLatch.countDown
+      memoizer(2)
+    }
+
+    callTriggeredLatch.await(10, TimeUnit.SECONDS)
+    assert(2 === memoizer(1))
+    expectResult(Map(1 -> 2))(memoizer.snap)
+    callReadyLatch.countDown()
+
+    assert(3 == Await.result(result))
+    expectResult(Map(1 -> 2, 2 -> 3))(memoizer.snap)
+  }
+
+  test("Memoize.snappable: snap ignores failed computations") {
+    val memoizer = Memoize.snappable[Int, Int] {
+      case 2 => throw new RuntimeException
+      case i => i + 1
+    }
+    assert(memoizer.snap.isEmpty)
+
+    intercept[RuntimeException] {
+      memoizer(2)
+    }
+    assert(memoizer.snap.isEmpty)
+
+    assert(2 == memoizer(1))
+    expectResult(Map(1 -> 2))(memoizer.snap)
   }
 }

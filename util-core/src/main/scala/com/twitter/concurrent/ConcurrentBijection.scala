@@ -3,8 +3,9 @@
 package com.twitter.concurrent
 
 import java.util.concurrent.ConcurrentHashMap
-import scala.collection.mutable.{Map => MMap}
+
 import scala.collection.JavaConversions._
+import scala.collection.mutable.{Map => MMap}
 
 // A bijection that may be modified and accessed simultaneously.  Note
 // that we can allow only one modification at a time. Updates need to
@@ -24,7 +25,7 @@ class ConcurrentBijection[A, B] extends MMap[A, B] {
     this
   }
 
-  def +=(elem: (A, B)) = { 
+  def +=(elem: (A, B)) = {
     elem match {
       case (key, value) => update(key, value)
     }

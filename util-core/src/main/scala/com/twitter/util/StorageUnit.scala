@@ -18,6 +18,7 @@ package com.twitter.util
 
 object StorageUnit {
   val infinite = new StorageUnit(Long.MaxValue)
+  val zero = new StorageUnit(0)
 
   private def factor(s: String) = {
     var lower = s.toLowerCase
@@ -37,14 +38,18 @@ object StorageUnit {
     }
   }
 
+  /**
+   * Note, this can cause overflows of the Long used to represent the
+   * number of bytes.
+   */
   def parse(s: String): StorageUnit = s.split("\\.") match {
     case Array(v, u) =>
-      val vv = v.toInt
+      val vv = v.toLong
       val uu = factor(u)
-      new StorageUnit(vv*uu)
+      new StorageUnit(vv * uu)
 
     case _ =>
-      throw new NumberFormatException("invalid storage unit string")
+      throw new NumberFormatException("invalid storage unit string: %s".format(s))
   }
 }
 
@@ -53,6 +58,9 @@ object StorageUnit {
  *
  * If you import the [[com.twitter.conversions.storage]] implicits you can
  * write human-readable values such as `1.gigabyte` or `50.megabytes`.
+ *
+ * Note: operations can cause overflows of the Long used to represent the
+ * number of bytes.
  */
 class StorageUnit(val bytes: Long) extends Ordered[StorageUnit] {
   def inBytes     = bytes
@@ -62,10 +70,12 @@ class StorageUnit(val bytes: Long) extends Ordered[StorageUnit] {
   def inTerabytes = bytes / (1024L * 1024 * 1024 * 1024)
   def inPetabytes = bytes / (1024L * 1024 * 1024 * 1024 * 1024)
   def inExabytes  = bytes / (1024L * 1024 * 1024 * 1024 * 1024 * 1024)
-  
+
   def +(that: StorageUnit): StorageUnit = new StorageUnit(this.bytes + that.bytes)
   def -(that: StorageUnit): StorageUnit = new StorageUnit(this.bytes - that.bytes)
   def *(scalar: Double): StorageUnit = new StorageUnit((this.bytes.toDouble*scalar).toLong)
+  def *(scalar: Long): StorageUnit = new StorageUnit(this.bytes * scalar)
+  def /(scalar: Long): StorageUnit = new StorageUnit(this.bytes / scalar)
 
   override def equals(other: Any) = {
     other match {
@@ -76,8 +86,16 @@ class StorageUnit(val bytes: Long) extends Ordered[StorageUnit] {
     }
   }
 
+  override def hashCode: Int = bytes.hashCode
+
   override def compare(other: StorageUnit) =
     if (bytes < other.bytes) -1 else if (bytes > other.bytes) 1 else 0
+
+  def min(other: StorageUnit): StorageUnit =
+    if (this < other) this else other
+
+  def max(other: StorageUnit): StorageUnit =
+    if (this > other) this else other
 
   override def toString() = inBytes + ".bytes"
 

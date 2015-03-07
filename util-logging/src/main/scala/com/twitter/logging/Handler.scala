@@ -17,7 +17,6 @@
 package com.twitter.logging
 
 import java.util.{logging => javalog}
-import scala.collection.mutable
 
 /**
  * A base log handler for scala. This extends the java built-in handler and connects it with a
@@ -37,6 +36,9 @@ object NullHandler extends Handler(BareFormatter, None) {
   def publish(record: javalog.LogRecord) {}
   def close() {}
   def flush() {}
+
+  // for java compatibility
+  def get(): this.type = this
 }
 
 object StringHandler {
@@ -47,6 +49,11 @@ object StringHandler {
     formatter: Formatter = new Formatter(),
     level: Option[Level] = None
   ) = () => new StringHandler(formatter, level)
+
+  /**
+   * for java compatibility
+   */
+  def apply() = () => new StringHandler()
 }
 
 /**
@@ -86,6 +93,11 @@ object ConsoleHandler {
     formatter: Formatter = new Formatter(),
     level: Option[Level] = None
   ) = () => new ConsoleHandler(formatter, level)
+
+  /**
+   * for java compatibility
+   */
+  def apply() = () => new ConsoleHandler()
 }
 
 /**

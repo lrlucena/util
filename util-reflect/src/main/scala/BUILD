@@ -1,10 +1,15 @@
 scala_library(name='scala',
+  provides = scala_artifact(
+    org = 'com.twitter',
+    name = 'util-reflect',
+    repo = artifactory,
+  ),
   dependencies=[
-    pants('3rdparty:asm'),
-    pants('3rdparty:asm-commons'),
-    pants('3rdparty:asm-util'),
-    pants('3rdparty:cglib'),
-    pants('util/util-core/src/main/scala')
+    '3rdparty/jvm/asm',
+    '3rdparty/jvm/asm:asm-commons',
+    '3rdparty/jvm/asm:asm-util',
+    '3rdparty:cglib',
+    'util/util-core/src/main/scala'
   ],
-  sources=rglobs('*.scala')
+  sources=rglobs('*.scala'),
 )

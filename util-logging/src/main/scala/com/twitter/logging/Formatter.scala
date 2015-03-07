@@ -19,6 +19,7 @@ package com.twitter.logging
 import java.text.{MessageFormat, SimpleDateFormat}
 import java.util.regex.Pattern
 import java.util.{Date, GregorianCalendar, TimeZone, logging => javalog}
+
 import scala.collection.mutable
 
 private[logging] object Formatter {
@@ -121,12 +122,12 @@ class Formatter(
   /**
    * Return the string representation of a given log level's name
    */
-  def formatLevelName(level: javalog.Level) = {
+  def formatLevelName(level: javalog.Level): String = {
     level match {
       case x: Level =>
         x.name
       case x: javalog.Level =>
-        Logger.levelsMap.get(x.intValue) match {
+        Logger.levels.get(x.intValue) match {
           case None => "%03d".format(x.intValue)
           case Some(level) => level.name
         }

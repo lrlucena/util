@@ -1,12 +1,14 @@
 package com.twitter.jvm
 
-import com.twitter.conversions.storage._
-import com.twitter.conversions.time._
-import com.twitter.util.Time
 import java.lang.management.ManagementFactory
 import javax.management.openmbean.CompositeDataSupport
 import javax.management.{ObjectName, RuntimeMBeanException}
+
 import scala.collection.JavaConverters._
+
+import com.twitter.conversions.storage._
+import com.twitter.conversions.time._
+import com.twitter.util.Time
 
 class Hotspot extends Jvm {
   private[this] val epoch = Time.fromMilliseconds(ManagementFactory.getRuntimeMXBean().getStartTime())
@@ -100,7 +102,7 @@ class Hotspot extends Jvm {
         i <- 1L to thresh
         bucket <- cs.get("sun.gc.generation.0.agetable.bytes.%02d".format(i))
       } yield long(bucket)
-      
+
       Heap(allocated, tenuringThreshold getOrElse -1, ageHisto)
     }
 
@@ -124,7 +126,7 @@ class Hotspot extends Jvm {
         capacity <- cs.get("sun.gc.generation.0.space.0.capacity") map(long(_))
         used <- cs.get("sun.gc.generation.0.space.0.used") map(long(_))
       } yield PoolState(invocations, capacity.bytes, used.bytes)
-  
+
       state getOrElse NilJvm.edenPool.state()
     }
   }

@@ -1,8 +1,13 @@
 scala_library(name='scala',
+  provides = scala_artifact(
+    org = 'com.twitter',
+    name = 'util-zk',
+    repo = artifactory,
+  ),
   dependencies=[
-    pants('3rdparty:zookeeper'),
-    pants('util/util-core/src/main/scala'),
-    pants('util/util-logging/src/main/scala')
+    '3rdparty:zookeeper',
+    'util/util-core/src/main/scala',
+    'util/util-logging/src/main/scala'
   ],
-  sources=rglobs('*.scala')
+  sources=rglobs('*.scala'),
 )

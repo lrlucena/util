@@ -1,6 +1,6 @@
 package com.twitter.util
 
-import java.net.{UnknownHostException, InetAddress, Inet4Address}
+import java.net.{Inet4Address, InetAddress, UnknownHostException}
 
 object NetUtil {
   def isIpv4Address(ip: String): Boolean =
@@ -108,7 +108,7 @@ object NetUtil {
   def ipToIpBlock(ip: String, prefixLen: Option[Int]): (Int, Int) = {
     val arr = ip.split('.')
     val pLen = prefixLen match {
-      case None if (arr.size != 4) => arr.size * 8
+      case None if arr.length != 4 => arr.length * 8
       case t => t.getOrElse(32)
     }
 
@@ -128,7 +128,7 @@ object NetUtil {
   }
 
   def isInetAddressInBlock(inetAddress: InetAddress, ipBlock: (Int, Int)): Boolean =
-    isInetAddressInBlock(inetAddress, ipBlock)
+    isIpInBlock(inetAddressToInt(inetAddress), ipBlock)
 
   def isIpInBlocks(ip: Int, ipBlocks: Iterable[(Int, Int)]): Boolean = {
     ipBlocks exists { ipBlock => isIpInBlock(ip, ipBlock) }

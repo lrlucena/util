@@ -1,8 +1,7 @@
 package com.twitter.jvm
 
-import java.lang.management.{ManagementFactory, ThreadInfo}
 import java.lang.Thread.State._
-import scala.collection.mutable
+import java.lang.management.{ManagementFactory, ThreadInfo}
 
 /**
  * A thread contention summary providing a brief overview of threads
@@ -36,7 +35,7 @@ class ContentionSnapshot {
                       .collect { case Blocked(info) => info }
 
     val ownerIds = blocked map(_.getLockOwnerId) filter(_ != -1)
-    val owners = if (ownerIds.size == 0) Seq[String]() else
+    val owners = if (ownerIds.length == 0) Seq[String]() else
       bean.getThreadInfo(ownerIds.toArray, true, true).map(_.toString).toSeq
 
     val deadlockThreadIds = bean.findDeadlockedThreads()

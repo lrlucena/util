@@ -15,7 +15,7 @@ trait Stopwatch {
 
 /**
  * The system [[com.twitter.util.Stopwatch]] measures elapsed time
- * using [[System.nanoTime]].
+ * using `System.nanoTime`.
  */
 object Stopwatch extends Stopwatch {
 
@@ -24,4 +24,17 @@ object Stopwatch extends Stopwatch {
     val off = timeFn()
       () => timeFn() - off
   }
+
+  def const(dur: Duration): Stopwatch = new Stopwatch {
+    private[this] val fn = () => dur
+    def start() = fn
+  }
+}
+
+/**
+ * A trivial implementation of [[com.twitter.util.Stopwatch]] for use as a null
+ * object.
+ */
+object NilStopwatch extends Stopwatch {
+  def start(): Elapsed = () => Duration.Bottom
 }

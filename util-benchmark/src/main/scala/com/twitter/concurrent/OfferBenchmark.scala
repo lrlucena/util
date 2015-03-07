@@ -2,7 +2,7 @@ package com.twitter.concurrent
 
 import com.google.caliper.SimpleBenchmark
 import com.twitter.concurrent.Tx.{Commit, Result}
-import com.twitter.util.{Promise, Future}
+import com.twitter.util.{Future, Promise}
 import scala.util.Random
 
 class OfferBenchmark extends SimpleBenchmark {

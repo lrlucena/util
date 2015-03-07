@@ -1,14 +1,13 @@
 package com.twitter.util
 
 import com.twitter.conversions.time._
-import java.util.concurrent.{Future => JFuture}
-import java.util.concurrent._
-
+import java.util.concurrent.{Future => JFuture, _}
 import org.junit.runner.RunWith
 import org.scalatest.FunSuite
 import org.scalatest.concurrent.Eventually
 import org.scalatest.junit.JUnitRunner
 import org.scalatest.time.{Millis, Seconds, Span}
+import scala.runtime.NonLocalReturnControl
 
 @RunWith(classOf[JUnitRunner])
 class FuturePoolTest extends FunSuite with Eventually {
@@ -17,8 +16,8 @@ class FuturePoolTest extends FunSuite with Eventually {
     PatienceConfig(timeout = scaled(Span(2, Seconds)), interval = scaled(Span(5, Millis)))
 
   test("FuturePool should dispatch to another thread") {
-    val executor = Executors.newFixedThreadPool(1).asInstanceOf[ThreadPoolExecutor]
-    val pool     = FuturePool(executor)
+    val executor = Executors.newFixedThreadPool(1)
+    val pool = FuturePool(executor)
 
     val source = new Promise[Int]
     val result = pool { Await.result(source) } // simulate blocking call
@@ -41,13 +40,14 @@ class FuturePoolTest extends FunSuite with Eventually {
     val result1 = pool {
       runCount.incrementAndGet()
     }
+    Await.ready(result1)
 
     assert(runCount.get() === 0)
   }
 
   test("does not execute interrupted tasks") {
     val executor = Executors.newFixedThreadPool(1).asInstanceOf[ThreadPoolExecutor]
-    val pool     = FuturePool(executor)
+    val pool = FuturePool(executor)
 
     val runCount = new atomic.AtomicInteger
 
@@ -73,11 +73,9 @@ class FuturePoolTest extends FunSuite with Eventually {
 
   test("continue to run a task if it's interrupted while running") {
     val executor = Executors.newFixedThreadPool(1).asInstanceOf[ThreadPoolExecutor]
-    val pool     = FuturePool(executor)
+    val pool = FuturePool(executor)
 
     val runCount = new atomic.AtomicInteger
-
-    val source = new Promise[Int]
 
     val startedLatch = new CountDownLatch(1)
     val cancelledLatch = new CountDownLatch(1)
@@ -94,7 +92,7 @@ class FuturePoolTest extends FunSuite with Eventually {
       runCount.get
     }
 
-    startedLatch.await(50.milliseconds)
+    startedLatch.await(1.second)
     result.raise(new Exception)
     cancelledLatch.countDown()
 
@@ -106,11 +104,11 @@ class FuturePoolTest extends FunSuite with Eventually {
 
   test("returns exceptions that result from submitting a task to the pool") {
     val executor = new ThreadPoolExecutor(1, 1, 60, TimeUnit.SECONDS, new LinkedBlockingQueue(1))
-    val pool     = FuturePool(executor)
+    val pool = FuturePool(executor)
 
-    val source   = new Promise[Int]
-    val blocker1  = pool { Await.result(source) } // occupy the thread
-    val blocker2  = pool { Await.result(source) } // fill the queue
+    val source = new Promise[Int]
+    pool { Await.result(source) } // occupy the thread
+    pool { Await.result(source) } // fill the queue
 
     val rv = pool { "yay!" }
 
@@ -121,7 +119,7 @@ class FuturePoolTest extends FunSuite with Eventually {
   }
 
   test("interrupt threads when interruptible") {
-    val executor = Executors.newFixedThreadPool(1).asInstanceOf[ThreadPoolExecutor]
+    val executor = Executors.newFixedThreadPool(1)
     val started = new Promise[Unit]
     val interrupted = new Promise[Unit]
     val ipool = FuturePool.interruptible(executor)
@@ -129,8 +127,10 @@ class FuturePoolTest extends FunSuite with Eventually {
     val f = ipool {
       try {
         started.setDone()
-        Thread.sleep(Long.MaxValue)
-      } catch { case exc: InterruptedException =>
+        while (true) {
+          Thread.sleep(Long.MaxValue)
+        }
+      } catch { case _: InterruptedException =>
         interrupted.setDone()
       }
     }
@@ -142,7 +142,7 @@ class FuturePoolTest extends FunSuite with Eventually {
   }
 
   test("not interrupt threads when not interruptible") {
-    val executor = Executors.newFixedThreadPool(1).asInstanceOf[ThreadPoolExecutor]
+    val executor = Executors.newFixedThreadPool(1)
     val a = new Promise[Unit]
     val b = new Promise[Unit]
     val nipool = FuturePool(executor)
@@ -157,5 +157,41 @@ class FuturePoolTest extends FunSuite with Eventually {
     f.raise(new RuntimeException("foo"))
     b.setDone()
     assert(Await.result(f) === 1)
+  }
+
+  test("satisfies result promise on fatal exceptions thrown by task") {
+    val executor = Executors.newFixedThreadPool(1)
+    val pool = FuturePool(executor)
+    val fatal = new LinkageError
+    assert(!NonFatal.isNonFatal(fatal))
+    val rv = pool { throw fatal }
+
+    val ex = intercept[ExecutionException] { Await.result(rv) }
+    assert(ex.getCause === fatal)
+  }
+
+  class PoolCtx {
+    val executor = Executors.newFixedThreadPool(1)
+    val pool = FuturePool(executor)
+
+    val pools = Seq(FuturePool.immediatePool, pool)
+  }
+
+  test("handles NonLocalReturnControl properly") {
+    val ctx = new PoolCtx
+    import ctx._
+
+    def fake(): String = {
+      pools foreach { pool =>
+        val rv = pool { return "OK" }
+
+        val e = intercept[FutureNonLocalReturnControl] { Await.result(rv) }
+        val f = intercept[NonLocalReturnControl[String]] { throw e.getCause }
+        assert(f.value === "OK")
+      }
+      "FINISHED"
+    }
+
+    assert(fake() === "FINISHED")
   }
 }

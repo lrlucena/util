@@ -1,8 +1,8 @@
 A bunch of idiomatic, small General Purpose tools.
 
-[![Build Status](https://secure.travis-ci.org/twitter/util.png)](http://travis-ci.org/twitter/util)
+[![Build Status](https://secure.travis-ci.org/twitter/util.png)](https://travis-ci.org/twitter/util)
 
-See the Scaladoc [here](http://twitter.github.com/util)
+See the Scaladoc [here](https://twitter.github.com/util)
 
 # Using in your Project
 
@@ -33,8 +33,8 @@ duration1.inMillis // => 1000L
 ```scala
 import com.twitter.conversions.storage._
 val amount = 8.megabytes
-amount.inBytes // => 8192L
-amount.inGigabytes // => 0.0078125
+amount.inBytes // => 8388608L
+amount.inKilobytes // => 8192L
 ```
 
 # Futures

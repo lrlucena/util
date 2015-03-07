@@ -1,9 +1,11 @@
 package com.twitter.concurrent
 
-import com.twitter.util.{Future, Promise, Return, Await}
 import java.util.concurrent.atomic.AtomicReference
+
 import scala.annotation.tailrec
 import scala.collection.immutable.Queue
+
+import com.twitter.util.{Await, Future, Promise}
 
 /**
  * An unbuffered FIFO queue, brokered by `Offer`s. Note that the queue is
@@ -136,5 +138,27 @@ class Broker[T] {
   /**
    * Retrieve an item from the broker, blocking.
    */
-  def ?? : T = Await.result(this?)
+  def ?? : T = Await.result(this ?)
+
+  /* Java-friendly API */
+
+  /**
+   * @see operator `!`
+   */
+  def sendAndSync(message: T): Future[Unit] = this ! message
+
+  /**
+   * @see operator `!!`
+   */
+  def sendAndAwait(message: T): Unit = this !! message
+
+  /**
+   * @see operator `?`
+   */
+  def recvAndSync(): Future[T] = this ?
+
+  /**
+   * @see operator `??`
+   */
+  def recvAndAwait(): T = this ??
 }

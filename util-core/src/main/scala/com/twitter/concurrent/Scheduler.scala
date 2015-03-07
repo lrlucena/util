@@ -1,11 +1,17 @@
 package com.twitter.concurrent
 
+import java.lang.management.ManagementFactory
 import java.util.ArrayDeque
 import java.util.concurrent._
 import java.util.concurrent.atomic.AtomicInteger
-import management.ManagementFactory
+
 import scala.util.Random
 
+import com.twitter.util.Awaitable.CanAwait
+
+/**
+ * An interface for scheduling [[java.lang.Runnable]] tasks.
+ */
 trait Scheduler {
   /**
    * Schedule `r` to be run at some time in the future.
@@ -25,14 +31,32 @@ trait Scheduler {
   //
   // [1] http://linux.die.net/man/3/clock_gettime
 
-  /** The amount of User time that's been scheduled as per ThreadMXBean. */
+  /**
+   * The amount of User time that's been scheduled as per ThreadMXBean.
+   */
   def usrTime: Long
 
-  /** The amount of CPU time that's been scheduled as per ThreadMXBean */
+  /**
+   * The amount of CPU time that's been scheduled as per ThreadMXBean.
+   */
   def cpuTime: Long
 
-  /** Number of dispatches performed by this scheduler. */
+  /**
+   * Total walltime spent in the scheduler.
+   */
+  def wallTime: Long
+
+  /**
+   * The number of dispatches performed by this scheduler.
+   */
   def numDispatches: Long
+
+  /**
+   * Executes a function `f` in a blocking fashion.
+   *
+   * Note: The permit may be removed in the future.
+   */
+  def blocking[T](f: => T)(implicit perm: CanAwait): T
 }
 
 /**
@@ -43,11 +67,18 @@ object Scheduler extends Scheduler {
 
   def apply(): Scheduler = self
 
-  // Note: This can be unsafe since some schedulers may be active,
-  // and flush() can be invoked on the wrong scheduler.
-  //
-  // This can happen, for example, if a LocalScheduler is used while
-  // a future is resolved via Await.
+  /**
+   * Swap out the current globally-set scheduler with another.
+   *
+   * Note: This can be unsafe since some schedulers may be active,
+   * and flush() can be invoked on the wrong scheduler.
+   *
+   * This can happen, for example, if a LocalScheduler is used while
+   * a future is resolved via Await.
+   *
+   * @param sched the other Scheduler to swap in for the one that is
+   * currently set
+   */
   def setUnsafe(sched: Scheduler) {
     self = sched
   }
@@ -56,14 +87,18 @@ object Scheduler extends Scheduler {
   def flush() = self.flush()
   def usrTime = self.usrTime
   def cpuTime = self.cpuTime
+  def wallTime = self.wallTime
   def numDispatches = self.numDispatches
-}
 
+  def blocking[T](f: => T)(implicit perm: CanAwait) = self.blocking(f)
+}
 
 /**
  * An efficient thread-local, direct-dispatch scheduler.
  */
-private class LocalScheduler extends Scheduler {
+class LocalScheduler(lifo: Boolean) extends Scheduler {
+  def this() = this(false)
+
   private[this] val SampleScale = 1000
   private[this] val bean = ManagementFactory.getThreadMXBean()
   private[this] val cpuTimeSupported = bean.isCurrentThreadCpuTimeSupported()
@@ -73,7 +108,10 @@ private class LocalScheduler extends Scheduler {
     override def initialValue = null
   }
 
-  private class Activation extends Scheduler {
+  /**
+   * A task-queueing, direct-dispatch scheduler
+   */
+  private class Activation extends Scheduler with Iterator[Runnable] {
     private[this] var r0, r1, r2: Runnable = null
     private[this] val rs = new ArrayDeque[Runnable]
     private[this] var running = false
@@ -82,22 +120,39 @@ private class LocalScheduler extends Scheduler {
     // This is safe: there's only one updater.
     @volatile var usrTime = 0L
     @volatile var cpuTime = 0L
+    @volatile var wallTime = 0L
     @volatile var numDispatches = 0L
 
     def submit(r: Runnable) {
       assert(r != null)
-      if (r0 == null) r0 = r
+
+      if (lifo) {
+        if (r2 != null) {
+          rs.addFirst(r2)
+          r2 = r1
+          r1 = r0
+        } else if (r1 != null) {
+          r2 = r1
+          r1 = r0
+        } else if (r0 != null) {
+          r1 = r0
+        }
+        r0 = r
+      } else if (r0 == null) r0 = r
       else if (r1 == null) r1 = r
       else if (r2 == null) r2 = r
       else rs.addLast(r)
+
       if (!running) {
         if (cpuTimeSupported && rng.nextInt(SampleScale) == 0) {
           numDispatches += SampleScale
           val cpu0 = bean.getCurrentThreadCpuTime()
           val usr0 = bean.getCurrentThreadUserTime()
+          val wall0 = System.nanoTime()
           run()
           cpuTime += (bean.getCurrentThreadCpuTime() - cpu0)*SampleScale
           usrTime += (bean.getCurrentThreadUserTime() - usr0)*SampleScale
+          wallTime += (System.nanoTime() - wall0)*SampleScale
         } else {
           run()
         }
@@ -108,25 +163,33 @@ private class LocalScheduler extends Scheduler {
       if (running) run()
     }
 
-    private[this] def run() {
-      val save = running
-      running = true
+    @inline def hasNext: Boolean = running && r0 != null
+
+    @inline def next(): Runnable = {
       // via moderately silly benchmarking, the
       // queue unrolling gives us a ~50% speedup
       // over pure Queue usage for common
       // situations.
+
+      val r = r0
+      r0 = r1
+      r1 = r2
+      r2 = if (rs.isEmpty) null else rs.removeFirst()
+      r
+    }
+
+    private[this] def run() {
+      val save = running
+      running = true
       try {
-        while (r0 != null) {
-          val r = r0
-          r0 = r1
-          r1 = r2
-          r2 = if (rs.isEmpty) null else rs.removeFirst()
-          r.run()
-        }
+        while (hasNext)
+          next().run()
       } finally {
         running = save
       }
     }
+
+    def blocking[T](f: => T)(implicit perm: CanAwait): T = f
   }
 
   private[this] def get(): Activation = {
@@ -139,15 +202,29 @@ private class LocalScheduler extends Scheduler {
     local.get()
   }
 
+  /** An implementaiton of Iterator over runnable tasks */
+  @inline def hasNext: Boolean = get().hasNext
+
+  /** An implementaiton of Iterator over runnable tasks */
+  @inline def next(): Runnable = get().next()
+
   // Scheduler implementation:
   def submit(r: Runnable) = get().submit(r)
   def flush() = get().flush()
 
   def usrTime = (activations.iterator map (_.usrTime)).sum
   def cpuTime = (activations.iterator map (_.cpuTime)).sum
+  def wallTime = (activations.iterator map (_.wallTime)).sum
   def numDispatches = (activations.iterator map (_.numDispatches)).sum
+
+  def blocking[T](f: => T)(implicit perm: CanAwait) = f
 }
 
+/**
+ * A named Scheduler mix-in that causes submitted tasks to be dispatched according to
+ * an [[java.util.concurrent.ExecutorService]] created by an abstract factory
+ * function.
+ */
 trait ExecutorScheduler { self: Scheduler =>
   val name: String
   val executorFactory: ThreadFactory => ExecutorService
@@ -198,9 +275,13 @@ trait ExecutorScheduler { self: Scheduler =>
     sum
   }
 
+  def wallTime = -1L
+
   def numDispatches = -1L  // Unsupported
 
   def getExecutor = executor
+
+  def blocking[T](f: => T)(implicit perm: CanAwait) = f
 }
 
 /**
@@ -215,11 +296,13 @@ class ThreadPoolScheduler(
 }
 
 /**
- * A scheduler that will bridge tasks from outside into the executor threads,
- * while keeping all local tasks on their local threads.
- * (Note: This scheduler is expecting an executor with unbounded capacity, not
- * expecting any RejectedExecutionException's other than the ones caused by
- * shutting down)
+ * A scheduler that bridges tasks submitted by external threads into local
+ * executor threads. All tasks submitted locally are executed on local threads.
+ *
+ * Note: This scheduler expects to create executors with unbounded capacity.
+ * Thus it does not expect and has undefined behavior for any
+ * `RejectedExecutionException`s other than those encountered after executor
+ * shutdown.
  */
 class BridgedThreadPoolScheduler(
   val name: String,
@@ -243,5 +326,8 @@ class BridgedThreadPoolScheduler(
         case _: RejectedExecutionException => local.submit(r)
       }
   }
-}
 
+  override def flush() =
+    if (Thread.currentThread.getThreadGroup == threadGroup)
+      local.flush()
+}

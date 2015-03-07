@@ -2,8 +2,9 @@ package com.twitter.util
 
 import com.twitter.concurrent.NamedPoolThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.{CancellationException, RejectedExecutionException, ExecutorService, Executors,
-  Future => JFuture}
+import java.util.concurrent.{
+  CancellationException, ExecutionException, ExecutorService, Executors, RejectedExecutionException}
+import scala.runtime.NonLocalReturnControl
 
 /**
  * A FuturePool executes tasks asynchronously, typically using a pool
@@ -83,7 +84,7 @@ class InterruptibleExecutorServiceFuturePool(
  * If a piece of work has started, it cannot be cancelled and will not propagate
  * cancellation unless interruptible is true.
  *
- * If you want to propagate cancellation, use 
+ * If you want to propagate cancellation, use
  */
 class ExecutorServiceFuturePool protected[this](
   val executor: ExecutorService,
@@ -109,8 +110,15 @@ class ExecutorServiceFuturePool protected[this](
 
         try
           p.updateIfEmpty(Try(f))
-        finally
-          Local.restore(current)
+        catch {
+          case nlrc: NonLocalReturnControl[_] =>
+            val fnlrc = new FutureNonLocalReturnControl(nlrc)
+            p.updateIfEmpty(Throw(fnlrc))
+            throw fnlrc
+          case e: Throwable =>
+            p.updateIfEmpty(Throw(new ExecutionException(e)))
+            throw e
+        } finally Local.restore(current)
       }
     }
 

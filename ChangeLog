@@ -1,3 +1,246 @@
+
+.. Author notes: this file is formatted with restructured text
+   (http://docutils.sourceforge.net/docs/user/rst/quickstart.html).
+   The changelog style is adapted from Apache Lucene.
+
+Next Version
+
+New Features:
+  * util-core: Add Future.collect() method that collects over Map's values
+  * util-stats: Create a new module, `util-stats` to move `finagle-core`
+                StatsReceivers to.  They retain the `com.twitter.finagle`
+                namespace to ease the transition.
+
+Deprecation:
+  * util-stats: Deprecate `com.twitter.finagle.stats.StatsReceiver#time{,TimeFuture}`.
+                Instead, please use the `com.twitter.finagle.stats.Stat` helpers
+                from scala, and the `com.twitter.finagle.stats.JStats` helpers
+                from java.
+
+API Changes:
+  * util-core: Rename Buf._.Unsafe to Buf._.Owned and Buf._.Copied to Buf._.Shared
+  * util-core: Remove the com.twitter.util.repository package
+
+Java Compatibility:
+  * util-app: Flaggable is now an abstract class for Java compatibility
+  * util-core: Make Futures an API entry point for Java users
+               (even for methods that take Scala collections)
+  * util-core: Add compilation tests to track Java compatibility of new API
+
+
+6.x
+
+6.22.2  2014-10-29
+
+  * util, finagle: add missing @RunWith annotation
+  * Java tests for Duration, Time and Timer
+  * util-core: remove Sieve example
+  * Reader.writable.fail: make reentrant
+  * util-app: add an option so that we can let apps fail fast if reading argument before args are parsed.
+  * {finagle,util}-core: Slurry of PartialFunction micro-optimizations
+
+API Changes:
+  * util-core: Removed `Sieve` example.
+  * util-core: Introduce new constructors and extractors for Buf types to
+               support more efficient, correct uses.  Buf types now come with
+               Copied and Direct management interfaces -- Direct tries to
+               provide direct access to the Buf's backing byte array, while
+               Copied ensures that the caller cannot accidentally mutate a Buf's
+               data. Additionally, helpers to support Buf-type coersion have
+               been added.
+
+6.22.1  2014-10-23
+
+Bug Fixes:
+  * util and finagle: fix compiler warnings
+
+Deprecation:
+  * util-core: Add deprecation of RingBuffer to changelog
+  * util-core: Removed IVar and IVarField 
+
+Documentation:
+  * util-core: Clarify Scaladoc of `Promise.attached`
+  * util-core: Add self-type to `Promise.Detachable` and augment Promise Scaladocs
+  * util-io: Better names for Buf.slice() paramters.
+
+New Features:
+  * util-app: Add App registration
+  * util-cache Add asynchronous cache with TTL 
+  * util-core: Add `Activity.future`
+
+Package factoring:
+  * util-logging: factor out testing code into new package util-test
+
+6.22.0  2014-10-13
+
+System Requirements:
+  * util-core: prefer Await.result(future.liftToTry) to deprecated methods
+  * c.t.util.Time: Scope Locals with `Local.let` instead of `save`+`restore`
+
+Changes in Runtime Behavior:
+  * util-logging:
+    - Logging's default handler is now async by default via `com.twitter.logging.QueueingHandler`.
+    - Two Flags allowing for customization:
+      + `com.twitter.logging.log.async`: Default true, turns this functionality on/off.
+      + `com.twitter.logging.log.async.maxsize`: Default 4096, max size of the async buffer.
+  * util.RingBuffer: fix buffer size on drops
+  * util-io: Fix Buf.ByteBuffer.slice
+  * util-core: Future.sleep: short-circuit when duration <= 0
+  * util-core: IVar and IVarField were removed. Use com.twitter.util.Promise instead because it provides a superset of IVar behavior.
+
+New Features:
+  * util-core: introduce Memoize.snappable
+  * util-app: add Flaggable.ofSet
+  * util-app: introduce Flag.let
+
+Optimizations:
+  * util-core: Perf improvement to ConcatBuf#slice
+  * util-core: Avoid accumulation of listeners in Future.select
+  * util-core: Event.filter only 1 call to filter predicate
+
+Bug Fixes:
+  * util-jvm: Fix logging in Jvm.foreachGc
+  * util-core: document StorageUnit can overflow
+  * util-core: check Future.proxyTo and Promise.become preconditions
+
+API Changes:
+  * util-core: remove Leaky and FutureBenchmark
+
+Documentation:
+  * util, ostrich, finagle, twitter-server: Remove all trailing spaces
+
+  Package factoring:
+  * Test classes from util-logging were factored into its own package, util-test.
+
+  API Changes:
+  * util-core: Deprecate `RingBuffer` in favor of Guava's `com.google.common.collect.EvictingQueue`.
+
+6.21.2  2014-09-08
+  * util-cache: Adds a Guava-backed asynchronous cache
+  * util-core: Fixed FuturePool for NLRC
+  * util-core: Improve java friendliness of futures
+  * util-core: Make register/close on Event() work atomically
+  * util-core: Reimplement Buf.Utf8 encoder/extractor using io.Charsets
+  * util-core: storage parse() should be able to handle Long
+  * util-logging: make Logger immutable & break cyclic dependency on Level
+  * util: Upgrade to scala_2.10
+
+6.20.0  2014-08-22
+
+  * util: Enables cross-publishing for 2.11
+  * util-app: Log severely if a flag is read at the wrong time
+  * util-core: Changes transform to fail Futures if you return inside the passed closure
+  * util-core: Copy bytes from Reader to Writer and OutputStream
+  * util-core: Fix RichU64String to throw for negative input Problem
+  * util-core: Optimizations in Buf
+  * util-core: Remove some unnecessary implicit conversions
+  * util-doc: Fix updatedocs.bash to update new util docs
+
+6.19.0  2014-08-05
+
+  * util: smattering of minor cleanups in util and finagle
+  * util-core: Reader and getContent symmetry
+
+6.18.4  2014-07-31
+
+  * util-core: Remove confusing NOOP 0.until(5) in Future.collect().
+  * util-app: Fix a bug in global flag parsing
+
+6.18.2  2014-07-23
+
+  * util-core: Fixes a broken sbt test
+  * util-core: Log exceptions caught by ChannelStatsHandler
+  * util-core: Satisfy promise on fatal exception in FuturePool task
+  * util-core: small perf improvements to Future.collect, Throw, Flag
+  * util-logging: java-friendly LoggerFactory API
+
+6.18.1  2014-07-08
+
+  * util: Update README to reflect correct storage units.
+  * util-*: Convert all tests in util to scalatest
+  * util-app: Simplifies the logic to get the appname
+  * util-io: Buf, Reader: remove Buf.Eof; end-of-stream is None
+  * util-io: Create Buf.ByteBuffer to wrap java.nio.ByteBuffer
+
+6.18.0  2014-06-23
+
+  * util-app: Don't kill the JVM on flag-parsing failure
+  * util-app: Improve the Scaladocs for com.twitter.app.Flag and friends
+  * util-core: Add U(32|64)(BE|LE) to Buf
+  * util-core: Add com.twitter.util.NilStopwatch
+  * util-core: Add src/main/java dependency on src/main/scala
+  * util-core: Catch InterruptedException in Closable collector thread
+  * util-core: Fix MockTimer#schedule(Duration)(=> Unit)'s cancel
+  * util-core: Fix update-after-interrupt race condition in AsyncSemaphore
+  * util-core: Signal the deprecation of com.twitter.util.Bijection.
+  * util-logging: Add additional handlers to Logging trait
+
+6.17.0  2014-06-04
+
+  * util: Upgrade dependency versions
+  * util-core: Scheduler productivity = cpuTime/wallTime
+  * util-core: Add a `take` method to `Spool`
+  * util-core: Introduce `ConcatBuf`
+  * util-core: add `Spool.collectFuture`
+
+6.16.0  2014-05-13
+
+  * util-app: Add flag for configuring acceptance of undefined flags
+  * util-app: Minor c.t.app.ClassPath/c.t.f.util.LoadService cleanup
+  * util-core: Adds Time.sleep for testing sleeping code
+
+6.15.0  2014-04-29
+
+  * util-app: enforce close grace period
+  * util-core: special case buf.slice(0, buf.length)
+  * util-core: add LIFO option to LocalScheduler
+  * util-core: improves usability of Var and VarSource from java
+  * util-core: Make spool lazier
+  * util-core: Fixes detachable semantics with ConstFuture
+  * util-core: make LocalScheduler non-private for custom schedulers
+
+6.14.0  2014-04-09
+
+  * util-benchmark: Fix caliper failures due to new guava
+  * util-core: Add Local.let
+  * util-core: Add com.twitter.io.Charsets and replace the use of org.jboss.netty.util.CharsetUtil
+  * util-core: Bump objectsize dependency to 0.0.10
+  * util-core: Comprehensive Scaladocs for Scheduler-related classes and traits
+  * util-core: Create a static Exception for use in `Future.raiseWithin`
+  * util-core: Future.select: fix inaccurate comments
+  * util-core: Make Function classes covariant
+  * util-core: Parse names into trees; introduce separate evaluation.
+  * util-core: Short-circuit `within` and `raiseWithin` if Future is already satisfied
+
+6.13.2  2014-03-24
+
+  * util-core: Add `StorageUnit.hashCode`
+  * util-core: Event.mergeMap: fix Closable
+  * util: Update 3rdparty library versions
+  * util: Upgrade to guava 16
+
+6.13.1  2014-03-20
+
+  * util: Update zk libraries
+
+6.13.0  2014-03-14
+
+  * util-app: add usage string, printed before flags
+  * util-app: Handle comma-separated values in `Flaggable.ofMap`
+  * util-app: Implement application-level shutdown handling in App.
+  * util-app: Remove hardcoded ports in FlagTest
+  * util-app: sort global flags in usage
+  * util-core/Offer: Don't do indexed lookups in prepare()
+  * util-core: Add support for interrupting Future.sleep
+  * util-core: Check whether JVM supports thread measurement before measuring
+  * util-core: Create daemon threads in all stock `com.twitter.util.FuturePool`s
+  * util-core: Event: mergeMap, not flatMap
+  * util-core: Performance optimizations for Future.collect
+  * util-core: TimeLike inSeconds should not truncate
+  * util-core: Var.collect, Fix deadlock caused by oversynchronizing
+  * util-core: Var: prevent stale updates
+  * util: ForkJoin scheduler: first draft
+
 6.12.1  2014-02-18
 
   * Upgrade everyone to the new c.t.common.server-set

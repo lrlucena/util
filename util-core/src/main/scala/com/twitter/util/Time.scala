@@ -18,8 +18,8 @@ package com.twitter.util
 
 import java.io.Serializable
 import java.text.SimpleDateFormat
-import java.util.{Locale, Date, TimeZone}
 import java.util.concurrent.TimeUnit
+import java.util.{Date, Locale, TimeZone}
 
 trait TimeLikeOps[This <: TimeLike[This]] {
   /** The top value is the greatest possible value. It is akin to an infinity. */
@@ -105,11 +105,16 @@ trait TimeLike[This <: TimeLike[This]] extends Ordered[This] { self: This =>
 
   def inMicroseconds: Long = inNanoseconds / Duration.NanosPerMicrosecond
   def inMilliseconds: Long = inNanoseconds / Duration.NanosPerMillisecond
-  def inSeconds: Int       = (inNanoseconds / Duration.NanosPerSecond) toInt
+  def inLongSeconds: Long  = inNanoseconds / Duration.NanosPerSecond
+  def inSeconds: Int       =
+    if (inLongSeconds > Int.MaxValue) Int.MaxValue
+    else if (inLongSeconds < Int.MinValue) Int.MinValue
+    else inLongSeconds.toInt
+  // Units larger than seconds safely fit into 32-bits when converting from a 64-bit nanosecond basis
   def inMinutes: Int       = (inNanoseconds / Duration.NanosPerMinute) toInt
   def inHours: Int         = (inNanoseconds / Duration.NanosPerHour) toInt
   def inDays: Int          = (inNanoseconds / Duration.NanosPerDay) toInt
-  def inMillis: Long       = inMilliseconds // (Backwards compat)
+  def inMillis: Long       = inMilliseconds // (Backwards compatibility)
 
   /**
    * Returns a value/`TimeUnit` pair; attempting to return coarser
@@ -224,6 +229,7 @@ object Time extends TimeLikeOps[Time] {
   // This is needed for Java compatibility.
   override def fromSeconds(seconds: Int): Time = super.fromSeconds(seconds)
   override def fromMilliseconds(millis: Long): Time = super.fromMilliseconds(millis)
+  override def fromMicroseconds(micros: Long): Time = super.fromMicroseconds(micros)
 
   /**
    * Time `Top` is greater than any other definable time, and is
@@ -326,6 +332,7 @@ object Time extends TimeLikeOps[Time] {
    * Note, this should only ever be updated by methods used for testing.
    */
   private[util] val localGetTime = new Local[()=>Time]
+  private[util] val localGetTimer = new Local[MockTimer]
 
   @deprecated("use Time.fromMilliseconds(...) instead", "2011-09-12") // date is a guess
   def apply(millis: Long) = fromMilliseconds(millis)
@@ -340,24 +347,27 @@ object Time extends TimeLikeOps[Time] {
    */
   def withTimeFunction[A](timeFunction: => Time)(body: TimeControl => A): A = {
     @volatile var tf = () => timeFunction
-    val save = Local.save()
-    try {
-      val timeControl = new TimeControl {
-        def set(time: Time) {
-          tf = () => time
+    val tmr = new MockTimer
+
+    Time.localGetTime.let(() => tf()) {
+      Time.localGetTimer.let(tmr) {
+        val timeControl = new TimeControl {
+          def set(time: Time): Unit = {
+            tf = () => time
+            tmr.tick()
+          }
+          def advance(delta: Duration): Unit = {
+            val newTime = tf() + delta
+            /* Modifying the var here instead of resetting the local allows this method
+             to work inside filters or between the creation and fulfillment of Promises.
+             See BackupRequestFilterTest in Finagle as an example. */
+            tf = () => newTime
+            tmr.tick()
+          }
         }
-        def advance(delta: Duration) {
-          val newTime = tf() + delta
-          /* Modifying the var here instead of resetting the local allows this method
-            to work inside filters or between the creation and fulfillment of Promises.
-            See BackupRequestFilterTest in Finagle for an example. */
-          tf = () => newTime
-        }
+
+        body(timeControl)
       }
-      Time.localGetTime() = () => tf()
-      body(timeControl)
-    } finally {
-      Local.restore(save)
     }
   }
 
@@ -384,6 +394,21 @@ object Time extends TimeLikeOps[Time] {
    */
   def withCurrentTimeFrozen[A](body: TimeControl => A): A = {
     withTimeAt(Time.now)(body)
+  }
+
+  /**
+   * Puts the currently executing thread to sleep for the given duration,
+   * according to object Time.
+   *
+   * This is useful for testing.
+   */
+  def sleep(duration: Duration) {
+    localGetTimer() match {
+      case None =>
+        Thread.sleep(duration.inMilliseconds)
+      case Some(timer) =>
+        Await.result(Future.sleep(duration)(timer))
+    }
   }
 
   @deprecated("Use Stopwatch", "5.4.0")
@@ -487,7 +512,7 @@ sealed class Time private[util] (protected val nanos: Long) extends {
 
   override def isFinite = true
 
-  def diff(that: Time) =  that match {
+  def diff(that: Time) = that match {
     case Undefined => Duration.Undefined
     case Top => Duration.Bottom
     case Bottom => Duration.Top
@@ -542,4 +567,16 @@ sealed class Time private[util] (protected val nanos: Long) extends {
   def toDate = new Date(inMillis)
 
   private def writeReplace(): Object = TimeBox.Finite(inNanoseconds)
+
+  /**
+   * Adds `delta` to this `Time`.
+   */
+  def plus(delta: Duration): Time = this + delta
+
+  /**
+   * Subtracts `delta` from this `Time`.
+   */
+  def minus(delta: Duration): Time = this - delta
+
+  override def floor(x: Duration): Time = super.floor(x) // for Java-compatibility
 }

@@ -4,13 +4,13 @@ import java.io.Serializable
 import java.util.concurrent.TimeUnit
 
 object Duration extends TimeLikeOps[Duration] {
-  import com.twitter.conversions.time._
 
   def fromNanoseconds(nanoseconds: Long): Duration = new Duration(nanoseconds)
 
   // This is needed for Java compatibility.
   override def fromSeconds(seconds: Int): Duration = super.fromSeconds(seconds)
   override def fromMilliseconds(millis: Long): Duration = super.fromMilliseconds(millis)
+  override def fromMicroseconds(micros: Long): Duration = super.fromMicroseconds(micros)
 
   val NanosPerMicrosecond = 1000L
   val NanosPerMillisecond = NanosPerMicrosecond * 1000L
@@ -21,7 +21,7 @@ object Duration extends TimeLikeOps[Duration] {
 
   /**
    * Create a duration from a [[java.util.concurrent.TimeUnit]].
-   * Synonyn for `apply`.
+   * Synonym for `apply`.
    */
   def fromTimeUnit(value: Long, unit: TimeUnit) = apply(value, unit)
 
@@ -49,14 +49,24 @@ object Duration extends TimeLikeOps[Duration] {
       else if (that eq Top) 0
       else 1
 
-    override def *(x: Long) =
+    override def *(x: Long): Duration =
       if (x == 0) Undefined
       else if (x < 0) Bottom
       else Top
 
-    override def /(x: Long) =
+    override def *(x: Double): Duration =
+      if (x == 0.0) Undefined
+      else if (x < 0.0) Bottom
+      else Top
+
+    override def /(x: Long): Duration =
       if (x == 0) Undefined
       else if (x < 0) Bottom
+      else Top
+
+    override def /(x: Double): Duration =
+      if (x == 0.0) Undefined
+      else if (x < 0.0) Bottom
       else Top
 
     override def isFinite = false
@@ -72,7 +82,7 @@ object Duration extends TimeLikeOps[Duration] {
     }
     override def unary_- = Bottom
     override def toString = "Duration.Top"
-    
+
     private def writeReplace(): Object = DurationBox.Top()
   }
 
@@ -87,17 +97,27 @@ object Duration extends TimeLikeOps[Duration] {
     override def compare(that: Duration) = if (this eq that) 0 else -1
 
     /** Scaling arithmetic is Bottom preserving. */
-    override def *(x: Long) =
+    override def *(x: Long): Duration =
       if (x == 0) Undefined
       else if (x < 0) Top
       else Bottom
 
-    override def /(x: Long) =
+    override def *(x: Double): Duration =
+      if (x == 0.0) Undefined
+      else if (x < 0.0) Top
+      else Bottom
+
+    override def /(x: Long): Duration =
       if (x == 0) Undefined
       else if (x < 0) Top
       else Bottom
 
-    override def %(x: Duration) = Undefined
+    override def /(x: Double): Duration =
+      if (x == 0.0) Undefined
+      else if (x < 0.0) Top
+      else Bottom
+
+    override def %(x: Duration): Duration = Undefined
 
     override def abs = Top
     override def fromNow = Time.Bottom
@@ -113,7 +133,7 @@ object Duration extends TimeLikeOps[Duration] {
 
     override def unary_- = Top
     override def toString = "Duration.Bottom"
-    
+
     private def writeReplace(): Object = DurationBox.Bottom()
   }
 
@@ -122,9 +142,11 @@ object Duration extends TimeLikeOps[Duration] {
 
     override def compare(that: Duration) = if (this eq that) 0 else 1
 
-    override def *(x: Long) = this
-    override def /(x: Long) = this
-    override def %(x: Duration) = this
+    override def *(x: Long): Duration = this
+    override def *(x: Double): Duration = this
+    override def /(x: Long): Duration = this
+    override def /(x: Double): Duration = this
+    override def %(x: Duration): Duration = this
     override def abs = this
     override def fromNow = Time.Undefined
     override def ago = Time.Undefined
@@ -349,21 +371,48 @@ sealed class Duration private[util] (protected val nanos: Long) extends {
 
   override def hashCode = nanos.hashCode
 
-  /** Scale the duration by the given multiplier */
+  /**
+   * Scales this `Duration` by multiplying by `x`.
+   */
   def *(x: Long) = try fromNanoseconds(LongOverflowArith.mul(nanos, x)) catch {
     case _: LongOverflowException if nanos < 0 == x < 0 => Top
     case _: LongOverflowException => Bottom
   }
 
-  /** Scale the duration by the given denominator */
+  /**
+   * Scales this `Duration` by multiplying by `x`.
+   */
+  def *(x: Double): Duration = (nanos * x) match {
+    case product if java.lang.Double.isNaN(product) => Undefined
+    case Double.PositiveInfinity => Top
+    case Double.NegativeInfinity => Bottom
+    case product =>
+      val productLong = product.toLong
+      if (productLong == Long.MaxValue) Top
+      else if (productLong == Long.MinValue) Bottom
+      else fromNanoseconds(productLong)
+  }
+
+  /**
+   * Scales this `Duration` by dividing by `x`.
+   */
   def /(x: Long): Duration =
     if (x != 0) fromNanoseconds(nanos / x)
     else if (nanos == 0) Undefined
     else if (nanos < 0) Bottom
     else Top
 
-  /** Scale the duration by the given denominator, returning its remainder */
-  def %(x: Duration) = x match {
+  /**
+   * Scales this `Duration` by dividing by `x`.
+   */
+  def /(x: Double): Duration =
+    if (x == 0.0) this / 0
+    else this * (1.0/x)
+
+  /**
+   * Scales this `Duration` by modding by `x`.
+   */
+  def %(x: Duration): Duration = x match {
     case Undefined | Nanoseconds(0) => Undefined
     case Nanoseconds(ns) => fromNanoseconds(nanos % ns)
     case Top | Bottom => this
@@ -389,4 +438,46 @@ sealed class Duration private[util] (protected val nanos: Long) extends {
   def isFinite = true
 
   private def writeReplace(): Object = DurationBox.Finite(inNanoseconds)
+
+  /**
+   * @see operator +
+   */
+  def plus(delta: Duration): Duration = this + delta
+
+  /**
+   * @see operator -
+   */
+  def minus(delta: Duration): Duration = this - delta
+
+  /**
+   * Negates this `Duration`.
+   */
+  def neg: Duration = -this
+
+  /**
+   * @see operator *
+   */
+  def mul(x: Long): Duration = this * x
+
+  /**
+   * @see operator *
+   */
+  def mul(x: Double): Duration = this * x
+
+  /**
+   * @see operator /
+   */
+  def div(x: Long): Duration = this / x
+
+  /**
+   * @see operator /
+   */
+  def div(x: Double): Duration = this / x
+
+  /**
+   * @see operator %
+   */
+  def rem(x: Duration): Duration = this % x
+
+  override def floor(x: Duration): Duration = super.floor(x) // for Java-compatibility
 }

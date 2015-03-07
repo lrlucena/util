@@ -1,13 +1,11 @@
 package com.twitter.util
 
-import java.lang.ref.WeakReference
 import org.junit.runner.RunWith
 import org.scalatest.FunSuite
-import org.scalatest.concurrent.Eventually
 import org.scalatest.junit.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class PromiseTest extends FunSuite with Eventually {
+class PromiseTest extends FunSuite {
   test("Promise.attached should detach via interruption") {
     val p = new HandledPromise[Unit]()
     val f = Promise.attached(p)
@@ -46,8 +44,8 @@ class PromiseTest extends FunSuite with Eventually {
   test("Promise.attached should detach properly for futures") {
     val f = Future.Unit
     val p = Promise.attached(f)
-    assert(p.detach())
     assert(!p.detach())
+    assert(p.poll === Some(Return(())))
   }
 
   test("Detached promises are no longer connected: Success") {
@@ -72,21 +70,44 @@ class PromiseTest extends FunSuite with Eventually {
     assert(p.poll === Some(Return(())))
   }
 
+  test("become not allowed when already satisfied") {
+    val value = "hellohello"
+    val p = new Promise[String]()
+    p.setValue(value)
+
+    val ex = intercept[IllegalStateException] {
+      p.become(new Promise[String]())
+    }
+    assert(ex.getMessage.contains(value))
+  }
+
+  test("Updating a Promise more than once should fail") {
+    val p = new Promise[Int]()
+    val first = Return(1)
+    val second = Return(2)
+
+    p.update(first)
+    val ex = intercept[Promise.ImmutableResult] {
+      p.update(second)
+    }
+    assert(ex.message.contains(first.toString))
+    assert(ex.message.contains(second.toString))
+  }
+
   // this won't work inline, because we still hold a reference to d
   def detach(d: Promise.Detachable) {
     assert(d != null)
     assert(d.detach())
   }
 
-  // System.gc is advisory, and isn't guaranteed to run
-  if (!Option(System.getProperty("SKIP_FLAKY")).isDefined) test("Promise.attached should properly detach on gc") {
-    val p = Promise[Unit]
-    val attachedRef: WeakReference[Promise[Unit] with Promise.Detachable] =
-      new WeakReference(Promise.attached(p))
-
-    detach(attachedRef.get())
-
-    System.gc()
-    eventually(assert(attachedRef.get() === null))
+  test("Promise.attached undone by detach") {
+    val p = new Promise[Unit]
+    assert(p.waitqLength === 0)
+    val q = Promise.attached(p)
+    assert(p.waitqLength === 1)
+    q.respond(_ => ())
+    assert(p.waitqLength === 1)
+    q.detach()
+    assert(p.waitqLength === 0)
   }
 }

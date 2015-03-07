@@ -1,8 +1,9 @@
 package com.twitter.concurrent
 
-import java.util.concurrent.RejectedExecutionException
 import java.util.ArrayDeque
-import com.twitter.util.{Future, Promise, Throw, NonFatal}
+import java.util.concurrent.RejectedExecutionException
+
+import com.twitter.util.{Future, NonFatal, Promise, Throw}
 
 /**
  * An AsyncSemaphore is a traditional semaphore but with asynchronous
@@ -22,13 +23,13 @@ class AsyncSemaphore protected (initialPermits: Int, maxWaiters: Option[Int]) {
      * Indicate that you are done with your Permit.
      */
     override def release() {
-      val run = AsyncSemaphore.this.synchronized {
+      AsyncSemaphore.this.synchronized {
         val next = waitq.pollFirst()
-        if (next == null) availablePermits += 1
-        next
+        if (next != null)
+          next.setValue(new SemaphorePermit)
+        else
+          availablePermits += 1
       }
-
-      if (run != null) run.setValue(new SemaphorePermit)
     }
   }
 
@@ -58,10 +59,10 @@ class AsyncSemaphore protected (initialPermits: Int, maxWaiters: Option[Int]) {
           case _ =>
             val promise = new Promise[Permit]
             promise.setInterruptHandler { case t: Throwable =>
-                AsyncSemaphore.this.synchronized {
-                  if (promise.updateIfEmpty(Throw(t)))
-                    waitq.remove(promise)
-                }
+              AsyncSemaphore.this.synchronized {
+                if (promise.updateIfEmpty(Throw(t)))
+                  waitq.remove(promise)
+              }
             }
             waitq.addLast(promise)
             promise
@@ -85,7 +86,7 @@ class AsyncSemaphore protected (initialPermits: Int, maxWaiters: Option[Int]) {
       val f = try func catch {
         case NonFatal(e) =>
           Future.exception(e)
-        case e =>
+        case e: Throwable =>
           permit.release()
           throw e
       }

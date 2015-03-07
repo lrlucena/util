@@ -5,24 +5,25 @@
  */
 package com.twitter.util;
 
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.EnumMap;
-import java.util.Set;
-import java.util.HashSet;
-import java.util.EnumSet;
-import java.util.Collections;
 import java.util.BitSet;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.Map;
 
-import org.apache.thrift.*;
-import org.apache.thrift.async.*;
-import org.apache.thrift.meta_data.*;
-import org.apache.thrift.transport.*;
-import org.apache.thrift.protocol.*;
+import org.apache.thrift.TBase;
+import org.apache.thrift.TBaseHelper;
+import org.apache.thrift.TException;
+import org.apache.thrift.TFieldIdEnum;
+import org.apache.thrift.TFieldRequirementType;
+import org.apache.thrift.meta_data.FieldMetaData;
+import org.apache.thrift.meta_data.FieldValueMetaData;
+import org.apache.thrift.protocol.TField;
+import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.protocol.TProtocolUtil;
+import org.apache.thrift.protocol.TStruct;
+import org.apache.thrift.protocol.TType;
 
 public class TestThriftStructure implements TBase<TestThriftStructure, TestThriftStructure._Fields>, java.io.Serializable, Cloneable {
   private static final TStruct STRUCT_DESC = new TStruct("TestThriftStructure");
@@ -101,9 +102,9 @@ public class TestThriftStructure implements TBase<TestThriftStructure, TestThrif
   public static final Map<_Fields, FieldMetaData> metaDataMap;
   static {
     Map<_Fields, FieldMetaData> tmpMap = new EnumMap<_Fields, FieldMetaData>(_Fields.class);
-    tmpMap.put(_Fields.A_STRING, new FieldMetaData("aString", TFieldRequirementType.DEFAULT, 
+    tmpMap.put(_Fields.A_STRING, new FieldMetaData("aString", TFieldRequirementType.DEFAULT,
         new FieldValueMetaData(TType.STRING)));
-    tmpMap.put(_Fields.A_NUMBER, new FieldMetaData("aNumber", TFieldRequirementType.DEFAULT, 
+    tmpMap.put(_Fields.A_NUMBER, new FieldMetaData("aNumber", TFieldRequirementType.DEFAULT,
         new FieldValueMetaData(TType.I32)));
     metaDataMap = Collections.unmodifiableMap(tmpMap);
     FieldMetaData.addStructMetaDataMap(TestThriftStructure.class, metaDataMap);
@@ -320,14 +321,14 @@ public class TestThriftStructure implements TBase<TestThriftStructure, TestThrif
     while (true)
     {
       field = iprot.readFieldBegin();
-      if (field.type == TType.STOP) { 
+      if (field.type == TType.STOP) {
         break;
       }
       switch (field.id) {
         case 1: // A_STRING
           if (field.type == TType.STRING) {
             this.aString = iprot.readString();
-          } else { 
+          } else {
             TProtocolUtil.skip(iprot, field.type);
           }
           break;
@@ -335,7 +336,7 @@ public class TestThriftStructure implements TBase<TestThriftStructure, TestThrif
           if (field.type == TType.I32) {
             this.aNumber = iprot.readI32();
             setANumberIsSet(true);
-          } else { 
+          } else {
             TProtocolUtil.skip(iprot, field.type);
           }
           break;
